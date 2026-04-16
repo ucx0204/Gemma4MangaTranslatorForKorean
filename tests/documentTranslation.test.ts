@@ -145,9 +145,10 @@ describe("document translation batching", () => {
     );
 
     expect(initialPayload).toContain('"gl"');
+    expect(initialPayload).toContain('"s":"ざんねん | 残念だったな"');
     expect(initialPayload).toContain('"r":"ざんねん"');
     expect(initialPayload).toContain('"k":"speech"');
-    expect(initialPayload).not.toContain('"o":"ざんねん | 残念だったな"');
+    expect(initialPayload).not.toContain('"o":"');
     expect(singlePayload).not.toContain('"chunk"');
     expect(singlePayload).not.toContain('"gl"');
     expect(singlePayload).not.toContain('"p":"001.png"');
@@ -259,5 +260,14 @@ describe("document translation batching", () => {
   it("rejects obvious runaway translations", () => {
     expect(getSuspiciousTranslationReason("知らない", "아시라나나나나나나나나나나나나나나나나나나")).toBe("repeated-char-run");
     expect(getSuspiciousTranslationReason("残念だったな", "고마워")).toBeNull();
+  });
+
+  it("rejects outputs that still contain Japanese instead of Korean", () => {
+    expect(getSuspiciousTranslationReason("聞こえなかったのか？", "聞こえなかったのか？")).toBe("contains-japanese-script");
+    expect(getSuspiciousTranslationReason("俺はエヴアンだ！", "俺はエヴアンだ! 귀족인 크리스티나")).toBe("contains-japanese-script");
+  });
+
+  it("rejects source-copy outputs even after punctuation cleanup", () => {
+    expect(getSuspiciousTranslationReason("ありがとうおかげで答えは出たわ", "ありがとう、おかげで答えは出たわ")).toBe("contains-japanese-script");
   });
 });

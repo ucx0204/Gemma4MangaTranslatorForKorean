@@ -97,9 +97,9 @@ export function buildCompactGemmaPayload(
 
 export function estimateDocumentSourceChars(items: DocumentTranslationBatchItem[]): number {
   return items.reduce((sum, item) => {
+    const modelSource = selectModelSource(item);
     const readingHint = selectReadingHint(item);
-    const rawHint = selectRawHint(item);
-    return sum + item.sourceText.length + readingHint.length + rawHint.length;
+    return sum + modelSource.length + readingHint.length;
   }, 0);
 }
 
@@ -191,6 +191,14 @@ export function getSuspiciousTranslationReason(sourceText: string, translatedTex
     return "empty";
   }
 
+  if (containsJapaneseScript(compactTranslated)) {
+    return "contains-japanese-script";
+  }
+
+  if (normalizeForComparison(compactTranslated) === normalizeForComparison(compactSource)) {
+    return "source-copy";
+  }
+
   if (/[{}\[\]"]/.test(compactTranslated) && /items|blockId|translated/i.test(compactTranslated)) {
     return "schema-leak";
   }
@@ -214,6 +222,14 @@ export function getSuspiciousTranslationReason(sourceText: string, translatedTex
   }
 
   return null;
+}
+
+function containsJapaneseScript(text: string): boolean {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(text);
+}
+
+function normalizeForComparison(text: string): string {
+  return text.replace(/[\s"'`~!@#$%^&*()\-_=+[\]{}\\|;:,<.>/?！？…・。、「」『』（）]/gu, "").toLowerCase();
 }
 
 function createBatch(
@@ -249,18 +265,25 @@ function toCompactItem(
   item: DocumentTranslationBatchItem,
   minimal: boolean
 ): Record<string, string> {
+  const modelSource = selectModelSource(item);
   const readingHint = selectReadingHint(item);
-  const rawHint = selectRawHint(item);
 
   return {
     id: item.modelId ?? item.blockId,
     ...(minimal ? {} : { p: item.pageName }),
-    s: item.sourceText,
+    s: modelSource,
     k: item.typeHint,
     d: item.sourceDirection,
-    ...(readingHint ? { r: readingHint } : {}),
-    ...(rawHint ? { o: rawHint } : {})
+    ...(readingHint ? { r: readingHint } : {})
   };
+}
+
+function selectModelSource(item: DocumentTranslationBatchItem): string {
+  const raw = item.ocrRawText?.trim() ?? "";
+  if (raw) {
+    return raw;
+  }
+  return item.sourceText.trim();
 }
 
 function selectReadingHint(item: DocumentTranslationBatchItem): string {
@@ -269,20 +292,6 @@ function selectReadingHint(item: DocumentTranslationBatchItem): string {
     return "";
   }
   return reading === item.sourceText.trim() ? "" : reading;
-}
-
-function selectRawHint(item: DocumentTranslationBatchItem): string {
-  const raw = item.ocrRawText?.trim() ?? "";
-  if (!raw) {
-    return "";
-  }
-
-  const source = item.sourceText.trim();
-  const reading = item.readingText?.trim() ?? "";
-  if (raw === source || raw === reading || raw === `${reading} | ${source}` || raw === `${source} | ${reading}`) {
-    return "";
-  }
-  return raw;
 }
 
 function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslationBatchItem {
@@ -304,9 +313,9 @@ function estimateBatchCost(items: DocumentTranslationBatchItem[]): number {
 }
 
 function estimateItemCost(item: DocumentTranslationBatchItem): number {
+  const modelSource = selectModelSource(item);
   const readingHint = selectReadingHint(item);
-  const rawHint = selectRawHint(item);
-  return item.sourceText.length + readingHint.length + rawHint.length + item.pageName.length + 24;
+  return modelSource.length + readingHint.length + item.pageName.length + 24;
 }
 
 function normalizeGemmaTranslationItem(entry: unknown): RawGemmaTranslationItem | null {

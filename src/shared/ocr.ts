@@ -49,16 +49,17 @@ export function buildOcrBlockCandidates(pageId: string, spans: OcrSpan[], pageSi
 
 export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, candidates: OcrBlockCandidate[]): TranslationBlock[] {
   return candidates.map((candidate) => {
+    const rawSourceText = candidate.ocrRawText?.trim() || candidate.sourceText;
     const sourceDirection: TextDirection = candidate.writingMode === "vertical" ? "vertical" : "horizontal";
     const type = candidate.typeHint;
     const renderDirection = enforceRenderDirection(type, sourceDirection);
     const bbox = pixelsToBbox(candidate.bboxPx, page.width, page.height);
-    const baseText = candidate.sourceText || candidate.readingText || "";
+    const baseText = rawSourceText || candidate.readingText || "";
     return {
       id: candidate.blockId,
       type,
       bbox,
-      sourceText: candidate.sourceText,
+      sourceText: rawSourceText,
       translatedText: "",
       confidence: clamp(candidate.confidence, 0, 1),
       sourceDirection,
@@ -71,7 +72,7 @@ export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, cand
       opacity: 0.78,
       autoFitText: true,
       readingText: candidate.readingText,
-      ocrRawText: candidate.ocrRawText,
+      ocrRawText: rawSourceText,
       ocrConfidence: candidate.confidence
     };
   });

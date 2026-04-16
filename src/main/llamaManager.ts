@@ -890,12 +890,13 @@ function buildDocumentTranslationPrompt(mode: Exclude<GemmaRequestMode, "repair"
   return [
     "Translate OCR-extracted Japanese manga text into natural Korean Hangul.",
     "Input is minified JSON with keys chunk, gl, and items.",
-    "Each item uses compact keys: id=short request id, s=source text, k=type hint, d=source direction, r=reading hint, o=raw OCR hint.",
-    "Use r and o only to disambiguate furigana or OCR noise. Do not echo those hints back.",
+    "Each item uses compact keys: id=short request id, s=raw OCR text, k=type hint, d=source direction, r=reading hint.",
+    "s is noisy raw OCR and may include furigana, duplicated readings, separators, or OCR garbage.",
+    "Use r only as an optional reading hint when it helps disambiguate the raw OCR.",
     "Return exactly one tuple for every provided id. Never invent extra ids.",
     "Output compact JSON only. No prose. No markdown. No explanation.",
     "translatedText must be Korean Hangul. Do not copy Japanese source text into translatedText.",
-    "If OCR is noisy, infer the intended Japanese meaning first, then translate that meaning into Korean.",
+    "First infer the intended Japanese meaning from the noisy raw OCR, then translate that meaning into Korean.",
     "Never loop or stutter stray syllables like 나나나, 싶싶싶, 아아아 unless the source explicitly stutters.",
     mode === "group"
       ? "This is a missing-block retry group. Be especially careful to return every requested id."

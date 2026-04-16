@@ -90,6 +90,43 @@ describe("OCR normalization and block building", () => {
     expect(blocks[0].autoFitText).toBe(true);
   });
 
+  it("uses raw OCR text as the editable block source when available", () => {
+    const page: AnalysisRequestPage = {
+      id: "page-1",
+      name: "page.png",
+      imagePath: "page.png",
+      dataUrl: "",
+      width: 1000,
+      height: 1600
+    };
+
+    const spans: OcrSpan[] = [
+      {
+        id: "main",
+        pageId: "page-1",
+        bboxPx: { x: 300, y: 120, w: 60, h: 260 },
+        textRaw: "残念だったな",
+        textNormalized: "残念だったな",
+        confidence: 0.95,
+        writingMode: "vertical"
+      },
+      {
+        id: "ruby",
+        pageId: "page-1",
+        bboxPx: { x: 368, y: 148, w: 18, h: 90 },
+        textRaw: "ざんねん",
+        textNormalized: "ざんねん",
+        confidence: 0.91,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates("page-1", spans, { width: page.width, height: page.height });
+    const blocks = ocrCandidatesToTranslationBlocks(page, candidates);
+    expect(blocks[0].sourceText).toBe("残念だったな ざんねん");
+    expect(blocks[0].ocrRawText).toBe("残念だったな ざんねん");
+  });
+
   it("keeps clearly separated manga bubbles as separate OCR blocks", () => {
     const spans: OcrSpan[] = [
       {
