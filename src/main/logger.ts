@@ -1,0 +1,75 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+const DEFAULT_LOG_PATH = join(process.cwd(), "logs", "app.log");
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export function getLogPath(): string {
+  const configured = process.env.MANGA_TRANSLATOR_LOG_PATH?.trim();
+  return configured || DEFAULT_LOG_PATH;
+}
+
+export function logDebug(message: string, detail?: unknown): void {
+  writeLog("debug", message, detail);
+}
+
+export function logInfo(message: string, detail?: unknown): void {
+  writeLog("info", message, detail);
+}
+
+export function logWarn(message: string, detail?: unknown): void {
+  writeLog("warn", message, detail);
+}
+
+export function logError(message: string, detail?: unknown): void {
+  writeLog("error", message, detail);
+}
+
+export function writeLog(level: LogLevel, message: string, detail?: unknown): void {
+  const logPath = getLogPath();
+  const timestamp = new Date().toISOString();
+  const suffix = detail === undefined ? "" : ` ${serializeDetail(detail)}`;
+  const line = `[${timestamp}] [${level.toUpperCase()}] ${message}${suffix}\n`;
+  writeConsole(level, line);
+
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, line, "utf8");
+  } catch (error) {
+    console.error("Failed to write app log", error);
+  }
+}
+
+function writeConsole(level: LogLevel, line: string): void {
+  const trimmed = line.trimEnd();
+  if (level === "error") {
+    console.error(trimmed);
+    return;
+  }
+  if (level === "warn") {
+    console.warn(trimmed);
+    return;
+  }
+  console.log(trimmed);
+}
+
+function serializeDetail(detail: unknown): string {
+  if (detail instanceof Error) {
+    return JSON.stringify({
+      name: detail.name,
+      message: detail.message,
+      stack: detail.stack
+    });
+  }
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}

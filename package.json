@@ -1,0 +1,32 @@
+{
+  "name": "manga-gemma-translator",
+  "version": "0.1.0",
+  "description": "Desktop manga translation overlay editor powered by Gemma 4 multimodal GGUF.",
+  "type": "commonjs",
+  "main": "out/main/index.js",
+  "scripts": {
+    "bootstrap:glmocr": "node scripts/ensure-glmocr-runtime.cjs",
+    "dev": "node scripts/dev.cjs",
+    "build": "node scripts/build.cjs",
+    "compile:electron": "tsc -p tsconfig.electron.json",
+    "logs": "node scripts/tail-log.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "preview": "npm run build && node scripts/preview.cjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron-vite": "^4.0.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "electron": "^39.2.7",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.16"
+  }
+}

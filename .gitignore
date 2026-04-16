@@ -1,0 +1,8 @@
+node_modules/
+out/
+*.log
+.venv-glmocr/
+.env
+.env.local
+tmp-tiles/
+tmp-*.png
