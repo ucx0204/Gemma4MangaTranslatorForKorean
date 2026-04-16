@@ -35,7 +35,7 @@ function spawnChild(command, args, env = {}) {
   children.push(child);
   child.on("exit", () => {
     for (const other of children) {
-      if (other !== child && !other.killed) {
+      if (other !== child && other.exitCode === null && other.signalCode === null) {
         other.kill();
       }
     }
@@ -77,7 +77,7 @@ process.on("SIGTERM", shutdown);
 
 function shutdown() {
   for (const child of children) {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill();
     }
   }
@@ -85,7 +85,12 @@ function shutdown() {
 }
 
 (async () => {
-  ensureGlmOcrRuntime({ root });
+  const shouldBootstrapAnalysisRuntime =
+    process.env.MANGA_TRANSLATOR_SKIP_GLMOCR_BOOTSTRAP !== "1" && !process.argv.includes("--skip-glmocr-bootstrap");
+
+  if (shouldBootstrapAnalysisRuntime) {
+    ensureGlmOcrRuntime({ root });
+  }
   runSync(process.execPath, [nodeBin("typescript", "bin", "tsc"), "-p", "tsconfig.electron.json"]);
   spawnChild(process.execPath, [nodeBin("vite", "bin", "vite.js"), "--config", "vite.renderer.config.ts", "--host", "127.0.0.1"]);
   await waitForUrl(rendererUrl);

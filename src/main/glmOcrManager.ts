@@ -5,6 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseJsonPayload } from "../shared/json";
 import type { AnalysisRequestPage, BBox, JobEvent, OcrSpan, OcrWritingMode } from "../shared/types";
 import { logError, logInfo, logWarn } from "./logger";
+import { terminateProcess } from "./utils/process";
+import { resolveLocalPythonExecutable } from "./utils/python";
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -38,7 +40,6 @@ type WorkerCommandSpec = {
 };
 
 const DEFAULT_WORKER_PATH = join(process.cwd(), "scripts", "glmocr_worker.py");
-const DEFAULT_VENV_PYTHON = join(process.cwd(), ".venv-glmocr", "Scripts", "python.exe");
 const DEFAULT_OLLAMA_PATH = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Programs", "Ollama", "ollama.exe") : "ollama";
 const DEFAULT_OLLAMA_PORT = "11434";
 const DEFAULT_OLLAMA_MODEL = "glm-ocr";
@@ -72,7 +73,13 @@ export class GlmOcrManager {
     };
 
     this.emit("starting", "GLM-OCR 준비 중", [commandSpec.command, ...commandSpec.args].join(" "));
-    logInfo("Starting GLM-OCR worker", { command: commandSpec.command, args: commandSpec.args, pageCount: pages.length });
+    logInfo("Starting GLM-OCR worker", {
+      command: commandSpec.command,
+      args: commandSpec.args,
+      pageCount: pages.length,
+      bboxScale: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel"),
+      bboxFormat: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy")
+    });
 
     try {
       const stdout = await this.runWorker(commandSpec, JSON.stringify(payload));
@@ -100,9 +107,9 @@ export class GlmOcrManager {
   }
 
   public async cancel(): Promise<void> {
-    await this.killChild(this.workerChild, "GLM-OCR worker");
+    await terminateProcess(this.workerChild, "GLM-OCR worker", 3000);
     this.workerChild = null;
-    await this.killChild(this.runtimeChild, "GLM-OCR runtime");
+    await terminateProcess(this.runtimeChild, "GLM-OCR runtime", 3000);
     this.runtimeChild = null;
 
     if (this.usesManagedRuntime) {
@@ -150,23 +157,16 @@ export class GlmOcrManager {
         MANGA_TRANSLATOR_GLMOCR_LAYOUT_DEVICE: readStringEnv("MANGA_TRANSLATOR_GLMOCR_LAYOUT_DEVICE", "cpu"),
         MANGA_TRANSLATOR_GLMOCR_CONNECT_TIMEOUT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_CONNECT_TIMEOUT", "180"),
         MANGA_TRANSLATOR_GLMOCR_REQUEST_TIMEOUT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_REQUEST_TIMEOUT", "300"),
-        MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS: readStringEnv("MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS", "4")
+        MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS: readStringEnv("MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS", "4"),
+        MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel"),
+        MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy")
       },
       usesManagedRuntime: true
     };
   }
 
   private resolvePythonExecutable(): string {
-    const configured = readStringEnv("MANGA_TRANSLATOR_GLMOCR_PYTHON");
-    if (configured) {
-      return configured;
-    }
-
-    if (existsSync(DEFAULT_VENV_PYTHON)) {
-      return DEFAULT_VENV_PYTHON;
-    }
-
-    return "python";
+    return resolveLocalPythonExecutable("MANGA_TRANSLATOR_GLMOCR_PYTHON");
   }
 
   private async ensureManagedRuntime(): Promise<void> {
@@ -314,18 +314,6 @@ export class GlmOcrManager {
         reject(new Error(`${label} failed (code=${code ?? "null"}, signal=${signal ?? "null"})`));
       });
     });
-  }
-
-  private async killChild(child: ChildProcess | null, label: string): Promise<void> {
-    if (!child || child.killed) {
-      return;
-    }
-    logWarn(`Cancelling ${label}`);
-    child.kill("SIGTERM");
-    await delay(500).catch(() => undefined);
-    if (!child.killed) {
-      child.kill("SIGKILL");
-    }
   }
 
   private async waitForOllamaReady(): Promise<void> {

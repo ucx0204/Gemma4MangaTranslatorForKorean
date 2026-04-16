@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampBbox, enforceRenderDirection, normalizeGemmaAnalysis, shouldConfirmRestart, shouldRunInpaint } from "../src/shared/geometry";
+import { clampBbox, enforceRenderDirection, normalizeGemmaAnalysis, resolveBlockRenderBbox, shouldConfirmRestart, shouldRunInpaint } from "../src/shared/geometry";
 import type { RawGemmaAnalysis } from "../src/shared/types";
 
 describe("geometry and block normalization", () => {
@@ -15,6 +15,15 @@ describe("geometry and block normalization", () => {
   it("forces speech bubbles to horizontal Korean lettering", () => {
     expect(enforceRenderDirection("speech", "vertical")).toBe("horizontal");
     expect(enforceRenderDirection("sfx", "vertical")).toBe("vertical");
+  });
+
+  it("falls back to the stored bbox when a dedicated render box is missing", () => {
+    expect(
+      resolveBlockRenderBbox({
+        type: "speech",
+        bbox: { x: 100, y: 120, w: 180, h: 220 }
+      })
+    ).toEqual({ x: 100, y: 120, w: 180, h: 220 });
   });
 
   it("normalizes Gemma output and preserves non-speech direction", () => {

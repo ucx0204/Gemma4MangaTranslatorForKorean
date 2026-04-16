@@ -1,1 +1,2 @@
 glmocr[selfhosted]
+onnxruntime

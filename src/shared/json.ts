@@ -56,10 +56,42 @@ export function extractMessagePayload(message: unknown): string {
     return "";
   }
 
-  const candidate = message as { content?: unknown; reasoning_content?: unknown };
+  const candidate = message as { content?: unknown; reasoning_content?: unknown; text?: unknown };
   const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
   if (content) {
     return content;
+  }
+
+  if (Array.isArray(candidate.content)) {
+    const joined = candidate.content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (!part || typeof part !== "object") {
+          return "";
+        }
+
+        const record = part as { text?: unknown; content?: unknown; type?: unknown };
+        if (typeof record.text === "string") {
+          return record.text;
+        }
+        if (typeof record.content === "string") {
+          return record.content;
+        }
+        return typeof record.type === "string" && record.type === "text" ? String(record.text ?? "").trim() : "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
+    if (joined) {
+      return joined;
+    }
+  }
+
+  if (typeof candidate.text === "string" && candidate.text.trim()) {
+    return candidate.text.trim();
   }
 
   return typeof candidate.reasoning_content === "string" ? candidate.reasoning_content.trim() : "";

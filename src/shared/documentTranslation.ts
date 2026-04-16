@@ -5,49 +5,50 @@ import type {
   DocumentTranslationBatchItem,
   GemmaRequestMode,
   MangaPage,
-  RawGemmaTranslationItem,
   RawGemmaTranslationBatch,
+  RawGemmaTranslationItem,
   TranslationBlock
 } from "./types";
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
+const CONTEXT_CHAR_LIMIT = 40;
+const REFERENCE_PAGE_LIMIT = 1;
+const REFERENCE_SNIPPET_LIMIT = 1;
+const ENABLE_NEARBY_PAGE_TEXT_CONTEXT = false;
 
 export function buildDocumentTranslationBatches(
   pages: MangaPage[],
   limits: DocumentBatchLimits,
   glossary: Array<{ sourceText: string; translatedText: string }> = []
 ): DocumentTranslationBatch[] {
-  const pageSections = pages
-    .map((page) => ({
-      pageId: page.id,
-      pageName: page.name,
-      items: page.blocks.filter((block) => block.sourceText.trim()).map((block) => toBatchItem(page, block))
-    }))
-    .filter((section) => section.items.length > 0);
+  const pageSections = pages.map((page) => ({
+    page,
+    pageId: page.id,
+    pageName: page.name,
+    items: pageToBatchItems(page)
+  }));
 
   const batches: DocumentTranslationBatch[] = [];
-  let current: DocumentTranslationBatchItem[] = [];
-
-  for (const section of pageSections) {
-    if (current.length > 0 && exceedsLimits([...current, ...section.items], limits)) {
-      batches.push(createBatch(batches.length, current, glossary));
-      current = [];
+  for (const [pageIndex, section] of pageSections.entries()) {
+    if (section.items.length === 0) {
+      continue;
     }
 
-    if (exceedsLimits(section.items, limits)) {
-      const chunks = chunkTranslationItems(section.items, { ...limits, maxPages: 1 });
+    const pageReferenceContext = ENABLE_NEARBY_PAGE_TEXT_CONTEXT ? (buildReferenceContext(pageSections, pageIndex) ?? []) : [];
+    if (exceedsLimits(section.items, { ...limits, maxPages: 1 })) {
+      const chunks = chunkTranslationItemsWithRanges(section.items, { ...limits, maxPages: 1 });
       for (const chunk of chunks) {
-        batches.push(createBatch(batches.length, chunk, glossary));
+        const referenceContext = [
+          ...(chunk.items.length === 1 ? buildSamePageReferenceContext(section.pageName, section.items, chunk.startIndex, chunk.endIndex) : []),
+          ...pageReferenceContext
+        ];
+        batches.push(createBatch(batches.length, chunk.items, glossary, section.page.dataUrl, referenceContext));
       }
       continue;
     }
 
-    current.push(...section.items);
-  }
-
-  if (current.length > 0) {
-    batches.push(createBatch(batches.length, current, glossary));
+    batches.push(createBatch(batches.length, section.items, glossary, section.page.dataUrl, pageReferenceContext));
   }
 
   return batches.map((batch, index, all) => ({
@@ -58,10 +59,17 @@ export function buildDocumentTranslationBatches(
 }
 
 export function chunkTranslationItems(items: DocumentTranslationBatchItem[], limits: DocumentBatchLimits): DocumentTranslationBatchItem[][] {
+  return chunkTranslationItemsWithRanges(items, limits).map((chunk) => chunk.items);
+}
+
+function chunkTranslationItemsWithRanges(
+  items: DocumentTranslationBatchItem[],
+  limits: DocumentBatchLimits
+): Array<{ items: DocumentTranslationBatchItem[]; startIndex: number; endIndex: number }> {
   const chunks: DocumentTranslationBatchItem[][] = [];
   let current: DocumentTranslationBatchItem[] = [];
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     const proposed = [...current, item];
     if (current.length > 0 && exceedsLimits(proposed, limits)) {
       chunks.push(current);
@@ -74,13 +82,20 @@ export function chunkTranslationItems(items: DocumentTranslationBatchItem[], lim
     chunks.push(current);
   }
 
-  return chunks;
+  let offset = 0;
+  return chunks.map((chunk) => {
+    const start = offset;
+    const end = offset + chunk.length - 1;
+    offset = end + 1;
+    return {
+      items: chunk,
+      startIndex: start,
+      endIndex: end
+    };
+  });
 }
 
-export function buildCompactGemmaPayload(
-  batch: DocumentTranslationBatch,
-  mode: GemmaRequestMode
-): string {
+export function buildCompactGemmaPayload(batch: DocumentTranslationBatch, mode: GemmaRequestMode): string {
   const minimal = mode === "single";
   const payload = {
     ...(minimal ? {} : { chunk: [batch.chunkIndex, batch.totalChunks] }),
@@ -88,6 +103,15 @@ export function buildCompactGemmaPayload(
       ? {}
       : {
           gl: batch.glossary.map((entry) => [entry.sourceText, entry.translatedText])
+        }),
+    ...(minimal || (batch.referenceContext?.length ?? 0) === 0
+      ? {}
+      : {
+          ctx: batch.referenceContext?.map((entry) => ({
+            rel: entry.relation,
+            p: entry.pageName,
+            s: entry.snippets
+          }))
         }),
     items: batch.items.map((item) => toCompactItem(item, minimal))
   };
@@ -170,10 +194,11 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
   }));
 }
 
-export function normalizeGemmaTranslationItems(items: unknown[]): RawGemmaTranslationItem[] {
+export function normalizeGemmaTranslationItems(items: unknown): RawGemmaTranslationItem[] {
+  const entries = normalizeGemmaTranslationEntries(items);
   const normalized: RawGemmaTranslationItem[] = [];
 
-  for (const entry of items) {
+  for (const entry of entries) {
     const item = normalizeGemmaTranslationItem(entry);
     if (!item?.blockId) {
       continue;
@@ -184,8 +209,68 @@ export function normalizeGemmaTranslationItems(items: unknown[]): RawGemmaTransl
   return normalized;
 }
 
-export function getSuspiciousTranslationReason(sourceText: string, translatedText: string): string | null {
-  const compactSource = sourceText.replace(/\s+/g, "");
+export function sanitizeOcrModelSource(rawText: string, readingText = ""): string {
+  const normalized = rawText.replace(/\r/g, "").replace(/\u200b/g, "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const readingCompact = compactForComparison(readingText);
+  const lines = normalized
+    .replace(/[|｜]/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const filtered: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    const compact = compactForComparison(line);
+    if (!compact) {
+      continue;
+    }
+
+    const previousAccepted = filtered.at(-1);
+    if (previousAccepted && compactForComparison(previousAccepted) === compact) {
+      continue;
+    }
+
+    if (isKanaOnly(compact) && readingCompact && readingCompact.includes(compact)) {
+      continue;
+    }
+
+    const previousLine = findNonEmptyLine(lines, index, -1);
+    const nextLine = findNonEmptyLine(lines, index, 1);
+    if (isShortKanaNoiseLine(compact, previousLine, nextLine)) {
+      continue;
+    }
+
+    filtered.push(stripTrailingKanaEcho(line, nextLine, readingCompact));
+  }
+
+  return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+export function selectModelSource(item: DocumentTranslationBatchItem): string {
+  const raw = item.ocrRawText?.trim() ?? "";
+  const candidate = sanitizeOcrModelSource(raw || item.sourceText.trim(), item.readingText);
+  return candidate || raw || item.sourceText.trim();
+}
+
+export function selectReadingHint(item: DocumentTranslationBatchItem): string {
+  const reading = item.readingText?.trim() ?? "";
+  if (!reading) {
+    return "";
+  }
+  return reading === item.sourceText.trim() ? "" : reading;
+}
+
+export function getSuspiciousTranslationReason(
+  sourceText: string,
+  translatedText: string,
+  options?: { modelSource?: string }
+): string | null {
+  const signalSource = options?.modelSource?.trim() || sourceText;
+  const compactSource = signalSource.replace(/\s+/g, "");
   const compactTranslated = translatedText.replace(/\s+/g, "");
   if (!compactTranslated) {
     return "empty";
@@ -199,8 +284,20 @@ export function getSuspiciousTranslationReason(sourceText: string, translatedTex
     return "source-copy";
   }
 
+  if (hasPromptLeak(compactTranslated)) {
+    return "prompt-leak";
+  }
+
+  if (hasCrossItemLeak(translatedText)) {
+    return "cross-item-leak";
+  }
+
   if (/[{}\[\]"]/.test(compactTranslated) && /items|blockId|translated/i.test(compactTranslated)) {
     return "schema-leak";
+  }
+
+  if (hasAsciiRunaway(compactTranslated)) {
+    return "non-korean-leak";
   }
 
   if (/(.)\1{8,}/u.test(compactTranslated) && compactTranslated.length >= Math.max(16, compactSource.length * 3)) {
@@ -221,6 +318,23 @@ export function getSuspiciousTranslationReason(sourceText: string, translatedTex
     return "id-leak";
   }
 
+  const sourceSegments = countMeaningfulSegments(signalSource);
+  const translatedSegments = countMeaningfulSegments(translatedText);
+  if (
+    sourceSegments <= 2 &&
+    translatedSegments >= Math.max(4, sourceSegments + 2) &&
+    compactTranslated.length >= Math.max(42, compactSource.length * 3)
+  ) {
+    return "runaway-context-leak";
+  }
+
+  if (
+    (sourceSegments >= 3 && compactTranslated.length < 12) ||
+    (compactSource.length >= 28 && compactTranslated.length < 14)
+  ) {
+    return "undertranslated";
+  }
+
   return null;
 }
 
@@ -235,13 +349,17 @@ function normalizeForComparison(text: string): string {
 function createBatch(
   index: number,
   items: DocumentTranslationBatchItem[],
-  glossary: Array<{ sourceText: string; translatedText: string }>
+  glossary: Array<{ sourceText: string; translatedText: string }>,
+  pageImageDataUrl: string,
+  referenceContext: DocumentTranslationBatch["referenceContext"] = []
 ): DocumentTranslationBatch {
   return {
     chunkIndex: index,
     totalChunks: 0,
     items,
-    glossary: glossary.slice()
+    glossary: glossary.slice(),
+    pageImageDataUrl,
+    referenceContext
   };
 }
 
@@ -250,21 +368,14 @@ function exceedsLimits(items: DocumentTranslationBatchItem[], limits: DocumentBa
     return false;
   }
 
-  return (
-    items.length > limits.maxBlocks ||
-    countDistinctPages(items) > limits.maxPages ||
-    estimateBatchCost(items) > limits.maxChars
-  );
+  return items.length > limits.maxBlocks || countDistinctPages(items) > limits.maxPages || estimateBatchCost(items) > limits.maxChars;
 }
 
 function countDistinctPages(items: DocumentTranslationBatchItem[]): number {
   return new Set(items.map((item) => item.pageId)).size;
 }
 
-function toCompactItem(
-  item: DocumentTranslationBatchItem,
-  minimal: boolean
-): Record<string, string> {
+function toCompactItem(item: DocumentTranslationBatchItem, minimal: boolean): Record<string, string> {
   const modelSource = selectModelSource(item);
   const readingHint = selectReadingHint(item);
 
@@ -278,20 +389,35 @@ function toCompactItem(
   };
 }
 
-function selectModelSource(item: DocumentTranslationBatchItem): string {
-  const raw = item.ocrRawText?.trim() ?? "";
-  if (raw) {
-    return raw;
-  }
-  return item.sourceText.trim();
+function pageToBatchItems(page: MangaPage): DocumentTranslationBatchItem[] {
+  const blocks = page.blocks.filter((block) => block.sourceText.trim());
+  return blocks.map((block, index) => ({
+    ...toBatchItem(page, block),
+    prevContext: buildContextPreview(blocks[index - 1]),
+    nextContext: buildContextPreview(blocks[index + 1])
+  }));
 }
 
-function selectReadingHint(item: DocumentTranslationBatchItem): string {
-  const reading = item.readingText?.trim() ?? "";
-  if (!reading) {
+function buildContextPreview(block: TranslationBlock | undefined): string {
+  if (!block) {
     return "";
   }
-  return reading === item.sourceText.trim() ? "" : reading;
+
+  const compact = selectModelSource({
+    blockId: block.id,
+    pageId: "",
+    pageName: "",
+    sourceText: block.sourceText,
+    typeHint: block.type,
+    sourceDirection: block.sourceDirection,
+    readingText: block.readingText,
+    ocrRawText: block.ocrRawText
+  });
+  const singleLine = compact.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= CONTEXT_CHAR_LIMIT) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, CONTEXT_CHAR_LIMIT - 1)}…`;
 }
 
 function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslationBatchItem {
@@ -312,10 +438,83 @@ function estimateBatchCost(items: DocumentTranslationBatchItem[]): number {
   return items.reduce((sum, item) => sum + estimateItemCost(item), 0);
 }
 
+function buildReferenceContext(
+  pageSections: Array<{ page: MangaPage; pageId: string; pageName: string; items: DocumentTranslationBatchItem[] }>,
+  pageIndex: number
+): DocumentTranslationBatch["referenceContext"] {
+  const references: NonNullable<DocumentTranslationBatch["referenceContext"]> = [];
+
+  for (let offset = 1; offset <= REFERENCE_PAGE_LIMIT; offset += 1) {
+    const previous = pageSections[pageIndex - offset];
+    if (previous && previous.items.length > 0) {
+      references.push({
+        relation: "prev",
+        pageName: previous.pageName,
+        snippets: previous.items
+          .slice(0, REFERENCE_SNIPPET_LIMIT)
+          .map((item) => toReferenceSnippet(selectModelSource(item)))
+          .filter(Boolean)
+      });
+    }
+
+    const next = pageSections[pageIndex + offset];
+    if (next && next.items.length > 0) {
+      references.push({
+        relation: "next",
+        pageName: next.pageName,
+        snippets: next.items
+          .slice(0, REFERENCE_SNIPPET_LIMIT)
+          .map((item) => toReferenceSnippet(selectModelSource(item)))
+          .filter(Boolean)
+      });
+    }
+  }
+
+  return references.filter((entry) => entry.snippets.length > 0);
+}
+
+function buildSamePageReferenceContext(
+  pageName: string,
+  items: DocumentTranslationBatchItem[],
+  startIndex: number,
+  endIndex: number
+): NonNullable<DocumentTranslationBatch["referenceContext"]> {
+  const snippets = [
+    ...items.slice(Math.max(0, startIndex - 2), startIndex),
+    ...items.slice(endIndex + 1, endIndex + 3)
+  ]
+    .map((item) => toReferenceSnippet(selectModelSource(item)))
+    .filter(Boolean)
+    .slice(0, REFERENCE_SNIPPET_LIMIT);
+
+  if (snippets.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      relation: "same",
+      pageName,
+      snippets
+    }
+  ];
+}
+
 function estimateItemCost(item: DocumentTranslationBatchItem): number {
   const modelSource = selectModelSource(item);
   const readingHint = selectReadingHint(item);
   return modelSource.length + readingHint.length + item.pageName.length + 24;
+}
+
+function toReferenceSnippet(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (singleLine.length < 8) {
+    return "";
+  }
+  if (/^[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+[！!？?…]*$/u.test(singleLine) && singleLine.length <= 10) {
+    return "";
+  }
+  return singleLine;
 }
 
 function normalizeGemmaTranslationItem(entry: unknown): RawGemmaTranslationItem | null {
@@ -356,6 +555,37 @@ function normalizeGemmaTranslationItem(entry: unknown): RawGemmaTranslationItem 
   };
 }
 
+function normalizeGemmaTranslationEntries(items: unknown): unknown[] {
+  if (Array.isArray(items)) {
+    return items;
+  }
+
+  if (!items || typeof items !== "object") {
+    return [];
+  }
+
+  return Object.entries(items as Record<string, unknown>).map(([blockId, value]) => {
+    if (typeof value === "string") {
+      return {
+        blockId,
+        translatedText: value
+      };
+    }
+
+    if (value && typeof value === "object") {
+      return {
+        ...(value as Record<string, unknown>),
+        blockId
+      };
+    }
+
+    return {
+      blockId,
+      translatedText: ""
+    };
+  });
+}
+
 function inferCompactTranslation(candidate: Record<string, unknown>): string {
   const compactT = stringOrEmpty(candidate.t);
   if (!compactT) {
@@ -380,4 +610,79 @@ function inferCompactTranslation(candidate: Record<string, unknown>): string {
 
 function stringOrEmpty(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function compactForComparison(text: string): string {
+  return text.replace(/\s+/g, "").trim();
+}
+
+function isKanaOnly(text: string): boolean {
+  return /^[\u3040-\u309f\u30a0-\u30ffー]+$/u.test(text);
+}
+
+function containsKanji(text: string): boolean {
+  return /[\u4e00-\u9fff]/u.test(text);
+}
+
+function findNonEmptyLine(lines: string[], startIndex: number, step: -1 | 1): string {
+  for (let index = startIndex + step; index >= 0 && index < lines.length; index += step) {
+    const value = lines[index]?.trim() ?? "";
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function isShortKanaNoiseLine(text: string, previousLine: string, nextLine: string): boolean {
+  const plain = text.replace(/[！？!?…。、「」『』（）()…・]/gu, "");
+  if (!plain || plain.length > 5) {
+    return false;
+  }
+  if (!isKanaOnly(plain)) {
+    return false;
+  }
+  if (/[！？!?…。]/u.test(text)) {
+    return false;
+  }
+  return containsKanji(previousLine) || containsKanji(nextLine);
+}
+
+function stripTrailingKanaEcho(line: string, nextLine: string, readingCompact: string): string {
+  const cleaned = line.replace(/\s+([ぁ-ゖァ-ヺー]{2,3})$/u, (full, tail) => {
+    if (!containsKanji(nextLine)) {
+      return full;
+    }
+    if (readingCompact && !readingCompact.includes(tail)) {
+      return full;
+    }
+    const leading = line.slice(0, Math.max(0, line.length - full.length)).trim();
+    if (!leading) {
+      return full;
+    }
+    return "";
+  });
+
+  return cleaned.trim();
+}
+
+function hasPromptLeak(text: string): boolean {
+  return /```|<\|turn\|>|input_json=|retry_hints=|retry_context=|broken_json=|translatedtext|blockid|thought-<channel|json\{/iu.test(text);
+}
+
+function hasCrossItemLeak(text: string): boolean {
+  return /(?:^|[\s"'`])b\d+(?:-\d+)+(?:[\s"'`:]|$)/iu.test(text) || /(?:^|[\s|])b\d+\s*:/iu.test(text) || /(?:\s|^)(?:or|또는)(?:\s|$)/iu.test(text) && /[|]/u.test(text);
+}
+
+function hasAsciiRunaway(text: string): boolean {
+  const letters = [...text].filter((char) => /[A-Za-z]/.test(char)).length;
+  return text.length >= 24 && letters / Math.max(1, text.length) >= 0.18;
+}
+
+function countMeaningfulSegments(text: string): number {
+  return text
+    .replace(/\r/g, "")
+    .split(/[\n。！？!?…]+/u)
+    .map((segment) => segment.replace(/\s+/g, "").trim())
+    .filter((segment) => segment.length >= 2).length;
 }

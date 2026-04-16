@@ -4,10 +4,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
+import { DetectorManager } from "./detectorManager";
 import { GlmOcrManager } from "./glmOcrManager";
 import { LlamaManager } from "./llamaManager";
 import { InpaintManager } from "./inpaintManager";
 import { getLogPath, logError, logInfo, logWarn, writeLog } from "./logger";
+import { normalizeLoadedProject } from "./project";
 import { buildOcrBlockCandidates, getOcrCandidateRejectionReason, ocrCandidatesToTranslationBlocks } from "../shared/ocr";
 import type { JobEvent, MangaPage, MangaProject, OcrBlockCandidate, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
@@ -183,14 +185,17 @@ function registerIpc(): void {
     }
 
     const raw = await readFile(result.filePaths[0], "utf8");
-    const project = JSON.parse(raw) as MangaProject;
+    const { project, warnings } = normalizeLoadedProject(JSON.parse(raw));
     const pages = await Promise.all(
       (project.pages ?? []).map(async (page) => ({
         ...page,
-        dataUrl: page.dataUrl || (page.imagePath ? await fileToDataUrl(page.imagePath) : ""),
+        dataUrl: page.dataUrl || (page.imagePath ? await fileToDataUrl(page.imagePath).catch(() => "") : ""),
         cleanLayerDataUrl: page.cleanLayerDataUrl ?? null
       }))
     );
+    for (const warning of warnings) {
+      logWarn("Project normalization warning", { filePath: result.filePaths[0], warning });
+    }
     logInfo("Project loaded", { filePath: result.filePaths[0], pageCount: pages.length });
     return { ...project, pages };
   });
@@ -254,23 +259,30 @@ function registerIpc(): void {
         });
       }
 
+      const detector = new DetectorManager({ jobId: id, emit, signal: abortController.signal });
+      activeJob.cleanup = () => detector.cancel();
+      const detectionResult = await detector.run(request.pages);
+      await detector.cancel();
+      activeJob.cleanup = undefined;
+
       const glmocr = new GlmOcrManager({ jobId: id, emit, signal: abortController.signal });
       activeJob.cleanup = () => glmocr.cancel();
       const ocrResult = await glmocr.run(request.pages);
       await glmocr.cancel();
       activeJob.cleanup = undefined;
 
-      const warnings: string[] = [...ocrResult.warnings];
+      const warnings: string[] = [...detectionResult.warnings, ...ocrResult.warnings];
       for (const warning of warnings) {
-        logWarn("GLM-OCR warning", { jobId: id, warning });
+        logWarn("Detection/OCR warning", { jobId: id, warning });
       }
 
-      const ocrPages: MangaPage[] = [];
+      const pageCandidates: Array<{ page: StartAnalysisRequest["pages"][number]; candidates: OcrBlockCandidate[] }> = [];
       for (const page of request.pages) {
         abortController.signal.throwIfAborted();
         const spans = ocrResult.pages.find((candidate) => candidate.id === page.id)?.spans ?? [];
+        const detections = detectionResult.pages.find((candidate) => candidate.id === page.id);
         logInfo("GLM-OCR spans ready", { jobId: id, pageId: page.id, spanCount: spans.length });
-        const candidates = buildOcrBlockCandidates(page.id, spans, { width: page.width, height: page.height });
+        const candidates = buildOcrBlockCandidates(page.id, spans, { width: page.width, height: page.height }, detections);
         const acceptedCandidates: OcrBlockCandidate[] = [];
         let rejectedCount = 0;
         for (const candidate of candidates) {
@@ -303,7 +315,8 @@ function registerIpc(): void {
             blockId: candidate.blockId,
             confidence: Number(candidate.confidence.toFixed(3)),
             spanCount: candidate.sourceSpanIds.length,
-            sourcePreview: summarizePreview(candidate.sourceText)
+            sourcePreview: summarizePreview(candidate.sourceText),
+            rawPreview: summarizePreview(candidate.ocrRawText ?? "")
           }))
         });
         emit({
@@ -320,13 +333,15 @@ function registerIpc(): void {
           logWarn("No OCR block candidates generated", { jobId: id, pageId: page.id });
         }
 
-        ocrPages.push({
-          ...page,
-          blocks: ocrCandidatesToTranslationBlocks(page, acceptedCandidates),
-          cleanLayerDataUrl: null,
-          inpaintApplied: false
-        });
+        pageCandidates.push({ page, candidates: acceptedCandidates });
       }
+
+      const ocrPages: MangaPage[] = pageCandidates.map(({ page, candidates }) => ({
+        ...page,
+        blocks: ocrCandidatesToTranslationBlocks(page, candidates),
+        cleanLayerDataUrl: null,
+        inpaintApplied: false
+      }));
 
       const llama = new LlamaManager({ jobId: id, emit, signal: abortController.signal });
       activeJob.cleanup = () => llama.shutdown();
@@ -448,6 +463,11 @@ function stripProjectForSave(project: MangaProject): MangaProject {
     ...project,
     pages: project.pages.map((page) => ({
       ...page,
+      blocks: page.blocks.map((block) => ({
+        ...block,
+        bboxSpace: "normalized_1000",
+        renderBboxSpace: block.renderBbox ? "normalized_1000" : undefined
+      })),
       dataUrl: "",
       cleanLayerDataUrl: page.cleanLayerDataUrl ?? null
     }))

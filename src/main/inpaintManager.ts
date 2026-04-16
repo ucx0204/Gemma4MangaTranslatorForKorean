@@ -5,6 +5,7 @@ import type { InpaintSettings, JobEvent, MangaPage } from "../shared/types";
 import { shouldRunInpaint } from "../shared/geometry";
 import { parseJsonPayload } from "../shared/json";
 import { logError, logInfo, logWarn } from "./logger";
+import { terminateProcess } from "./utils/process";
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -105,15 +106,11 @@ export class InpaintManager {
   public async cancel(): Promise<void> {
     const child = this.child;
     this.child = null;
-    if (child && !child.killed) {
-      logWarn("Cancelling Qwen inpaint worker");
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) {
-          child.kill("SIGKILL");
-        }
-      }, 3000).unref();
+    if (!child) {
+      return;
     }
+    logWarn("Cancelling Qwen inpaint worker");
+    await terminateProcess(child, "Qwen inpaint worker", 3000);
   }
 
   private async runWorker(command: string, args: string[], input: string): Promise<string> {

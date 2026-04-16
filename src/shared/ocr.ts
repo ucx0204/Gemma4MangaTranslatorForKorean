@@ -1,8 +1,21 @@
 import { clamp, enforceRenderDirection, estimateFontSizePx, pixelsToBbox } from "./geometry";
-import type { AnalysisRequestPage, BBox, BlockType, OcrBlockCandidate, OcrSpan, OcrWritingMode, TextDirection, TranslationBlock } from "./types";
+import type {
+  AnalysisRequestPage,
+  BBox,
+  BlockType,
+  DetectedBubbleRegion,
+  DetectedTextRegion,
+  OcrBlockCandidate,
+  OcrSpan,
+  OcrWritingMode,
+  TextDirection,
+  TranslationBlock
+} from "./types";
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
+const BUBBLE_INSET_RATIO = 0.02;
+const BUBBLE_INSET_MIN_PX = 4;
 
 export function normalizeOcrSpans(pageId: string, rawSpans: OcrSpan[], pageSize: { width: number; height: number }): OcrSpan[] {
   return rawSpans
@@ -28,7 +41,15 @@ export function normalizeOcrSpans(pageId: string, rawSpans: OcrSpan[], pageSize:
     .filter(isPresent);
 }
 
-export function buildOcrBlockCandidates(pageId: string, spans: OcrSpan[], pageSize: { width: number; height: number }): OcrBlockCandidate[] {
+export function buildOcrBlockCandidates(
+  pageId: string,
+  spans: OcrSpan[],
+  pageSize: { width: number; height: number },
+  detections?: {
+    textRegions?: DetectedTextRegion[];
+    bubbleRegions?: DetectedBubbleRegion[];
+  }
+): OcrBlockCandidate[] {
   const normalized = normalizeOcrSpans(pageId, spans, pageSize);
   const tagged = tagFurigana(normalized);
   const primary = tagged.filter((span) => !span.isFurigana);
@@ -36,15 +57,173 @@ export function buildOcrBlockCandidates(pageId: string, spans: OcrSpan[], pageSi
     return [];
   }
 
-  const groups = connectedComponents(primary, shouldMergeSpans);
-  return groups
-    .map((group, index) => buildCandidateFromGroup(pageId, group, tagged, pageSize))
+  const detectorCandidates = buildCandidatesFromDetections(pageId, primary, tagged, pageSize, detections);
+  const consumedSpanIds = new Set(detectorCandidates.flatMap((candidate) => candidate.sourceSpanIds));
+  const orphanSpans = primary.filter((span) => !consumedSpanIds.has(span.id));
+  const orphanGroups = connectedComponents(orphanSpans, shouldMergeSpans);
+  const orphanCandidates = orphanGroups.map((group) => buildOrphanCandidateWithBubbleFallback(pageId, group, tagged, pageSize, detections));
+
+  return [...detectorCandidates, ...orphanCandidates]
     .filter(isPresent)
     .sort((left, right) => compareCandidates(left, right))
     .map((candidate, index) => ({
       ...candidate,
       blockId: `${pageId}-block-${String(index + 1).padStart(3, "0")}`
     }));
+}
+
+function buildCandidatesFromDetections(
+  pageId: string,
+  primary: OcrSpan[],
+  allSpans: OcrSpan[],
+  pageSize: { width: number; height: number },
+  detections?: {
+    textRegions?: DetectedTextRegion[];
+    bubbleRegions?: DetectedBubbleRegion[];
+  }
+): Array<Omit<OcrBlockCandidate, "blockId">> {
+  const textRegions = (detections?.textRegions ?? []).filter((region) => region.pageId === pageId);
+  if (textRegions.length === 0) {
+    return [];
+  }
+
+  const bubbleRegions = (detections?.bubbleRegions ?? []).filter((region) => region.pageId === pageId);
+  const spansByRegion = new Map<string, OcrSpan[]>();
+
+  for (const span of primary) {
+    const bestRegion = findBestTextRegionForSpan(span, textRegions);
+    if (!bestRegion) {
+      continue;
+    }
+    const bucket = spansByRegion.get(bestRegion.id);
+    if (bucket) {
+      bucket.push(span);
+    } else {
+      spansByRegion.set(bestRegion.id, [span]);
+    }
+  }
+
+  return textRegions
+    .map((region) => {
+      const assigned = spansByRegion.get(region.id) ?? [];
+      if (assigned.length === 0) {
+        return null;
+      }
+
+      const mergedAssignedBox = mergeBoxes(assigned.map((span) => span.bboxPx));
+      const bubble = findBestBubbleForTextRegion(region, bubbleRegions) ?? findBestBubbleForBox(mergedAssignedBox, bubbleRegions);
+      return buildCandidateFromGroup(pageId, assigned, allSpans, pageSize, {
+        renderBboxPx: bubble ? expandBubbleRenderBox(bubble.bboxPx, pageSize) : undefined,
+        forcedTypeHint: region.kind === "bubble" || bubble ? "speech" : undefined,
+        detectedTextRegionId: region.id,
+        detectedBubbleRegionId: bubble?.id,
+        detectionScore: Math.max(region.score, bubble?.score ?? 0)
+      });
+    })
+    .filter(isPresent);
+}
+
+function buildOrphanCandidateWithBubbleFallback(
+  pageId: string,
+  group: OcrSpan[],
+  allSpans: OcrSpan[],
+  pageSize: { width: number; height: number },
+  detections?: {
+    textRegions?: DetectedTextRegion[];
+    bubbleRegions?: DetectedBubbleRegion[];
+  }
+): Omit<OcrBlockCandidate, "blockId"> | null {
+  const mergedBox = mergeBoxes(group.map((span) => span.bboxPx));
+  const bubbleRegions = (detections?.bubbleRegions ?? []).filter((region) => region.pageId === pageId);
+  const bubble = findBestBubbleForBox(mergedBox, bubbleRegions);
+  return buildCandidateFromGroup(pageId, group, allSpans, pageSize, {
+    renderBboxPx: bubble ? expandBubbleRenderBox(bubble.bboxPx, pageSize) : undefined,
+    forcedTypeHint: bubble ? "speech" : undefined,
+    detectedBubbleRegionId: bubble?.id,
+    detectionScore: bubble?.score
+  });
+}
+
+function findBestTextRegionForSpan(span: OcrSpan, textRegions: DetectedTextRegion[]): DetectedTextRegion | null {
+  let best: { region: DetectedTextRegion; score: number } | null = null;
+  for (const region of textRegions) {
+    const score = scoreSpanToTextRegion(span, region);
+    if (score <= 0) {
+      continue;
+    }
+    if (!best || score > best.score) {
+      best = { region, score };
+    }
+  }
+  return best?.region ?? null;
+}
+
+function scoreSpanToTextRegion(span: OcrSpan, region: DetectedTextRegion): number {
+  const spanArea = area(span.bboxPx);
+  const overlap = intersectionArea(span.bboxPx, region.bboxPx);
+  const overlapRatio = overlap / Math.max(1, spanArea);
+  const iou = intersectionOverUnion(span.bboxPx, region.bboxPx);
+  const centerInside = containsPoint(region.bboxPx, span.bboxPx.x + span.bboxPx.w / 2, span.bboxPx.y + span.bboxPx.h / 2);
+
+  if (!centerInside && overlapRatio < 0.2 && iou < 0.04) {
+    return 0;
+  }
+
+  const distancePenalty =
+    Math.abs(span.bboxPx.x + span.bboxPx.w / 2 - (region.bboxPx.x + region.bboxPx.w / 2)) / Math.max(1, region.bboxPx.w) +
+    Math.abs(span.bboxPx.y + span.bboxPx.h / 2 - (region.bboxPx.y + region.bboxPx.h / 2)) / Math.max(1, region.bboxPx.h);
+
+  return (centerInside ? 2 : 0) + overlapRatio * 1.8 + iou * 1.2 + region.score * 0.35 - distancePenalty * 0.35;
+}
+
+function findBestBubbleForTextRegion(region: DetectedTextRegion, bubbles: DetectedBubbleRegion[]): DetectedBubbleRegion | null {
+  let best: { bubble: DetectedBubbleRegion; score: number } | null = null;
+  const centerX = region.bboxPx.x + region.bboxPx.w / 2;
+  const centerY = region.bboxPx.y + region.bboxPx.h / 2;
+  for (const bubble of bubbles) {
+    const containsCenter = containsPoint(bubble.bboxPx, centerX, centerY);
+    const overlap = intersectionOverUnion(region.bboxPx, bubble.bboxPx);
+    const regionCovered = intersectionArea(region.bboxPx, bubble.bboxPx) / Math.max(1, area(region.bboxPx));
+    if (!containsCenter && regionCovered < 0.25 && overlap < 0.05) {
+      continue;
+    }
+
+    const score = (containsCenter ? 2 : 0) + regionCovered * 1.5 + overlap + bubble.score * 0.25 - area(bubble.bboxPx) / Math.max(1, area(region.bboxPx)) * 0.03;
+    if (!best || score > best.score) {
+      best = { bubble, score };
+    }
+  }
+  return best?.bubble ?? null;
+}
+
+function findBestBubbleForBox(sourceBox: BBox, bubbles: DetectedBubbleRegion[]): DetectedBubbleRegion | null {
+  let best: { bubble: DetectedBubbleRegion; score: number } | null = null;
+  const centerX = sourceBox.x + sourceBox.w / 2;
+  const centerY = sourceBox.y + sourceBox.h / 2;
+  const sourceArea = Math.max(1, area(sourceBox));
+
+  for (const bubble of bubbles) {
+    const containsCenter = containsPoint(bubble.bboxPx, centerX, centerY);
+    const coveredRatio = intersectionArea(sourceBox, bubble.bboxPx) / sourceArea;
+    const iou = intersectionOverUnion(sourceBox, bubble.bboxPx);
+    if (!containsCenter && coveredRatio < 0.35 && iou < 0.08) {
+      continue;
+    }
+
+    const bubbleAreaRatio = area(bubble.bboxPx) / sourceArea;
+    const score =
+      (containsCenter ? 2.2 : 0) +
+      coveredRatio * 2.1 +
+      iou * 1.4 +
+      bubble.score * 0.3 -
+      bubbleAreaRatio * 0.025;
+
+    if (!best || score > best.score) {
+      best = { bubble, score };
+    }
+  }
+
+  return best?.bubble ?? null;
 }
 
 export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, candidates: OcrBlockCandidate[]): TranslationBlock[] {
@@ -54,17 +233,22 @@ export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, cand
     const type = candidate.typeHint;
     const renderDirection = enforceRenderDirection(type, sourceDirection);
     const bbox = pixelsToBbox(candidate.bboxPx, page.width, page.height);
+    const renderBbox = candidate.renderBboxPx ? pixelsToBbox(candidate.renderBboxPx, page.width, page.height) : undefined;
     const baseText = rawSourceText || candidate.readingText || "";
+    const layoutBox = renderBbox ?? bbox;
     return {
       id: candidate.blockId,
       type,
       bbox,
+      renderBbox,
+      bboxSpace: "normalized_1000",
+      renderBboxSpace: renderBbox ? "normalized_1000" : undefined,
       sourceText: rawSourceText,
       translatedText: "",
       confidence: clamp(candidate.confidence, 0, 1),
       sourceDirection,
       renderDirection,
-      fontSizePx: estimateFontSizePx(baseText, bbox, { width: page.width, height: page.height }),
+      fontSizePx: estimateFontSizePx(baseText, layoutBox, { width: page.width, height: page.height }),
       lineHeight: sourceDirection === "vertical" ? 1.05 : 1.2,
       textAlign: "center",
       textColor: DEFAULT_TEXT_COLOR,
@@ -291,7 +475,14 @@ function buildCandidateFromGroup(
   pageId: string,
   group: OcrSpan[],
   allSpans: OcrSpan[],
-  pageSize: { width: number; height: number }
+  pageSize: { width: number; height: number },
+  options?: {
+    renderBboxPx?: BBox;
+    forcedTypeHint?: BlockType;
+    detectedTextRegionId?: string;
+    detectedBubbleRegionId?: string;
+    detectionScore?: number;
+  }
 ): Omit<OcrBlockCandidate, "blockId"> | null {
   if (group.length === 0) {
     return null;
@@ -299,7 +490,8 @@ function buildCandidateFromGroup(
 
   const writingMode = dominantWritingMode(group);
   const ordered = [...group].sort((left, right) => compareSpans(left, right, writingMode));
-  const bboxPx = expandBox(mergeBoxes(ordered.map((span) => span.bboxPx)), pageSize, 0.08, 12);
+  const mergedBboxPx = expandBox(mergeBoxes(ordered.map((span) => span.bboxPx)), pageSize, 0.08, 12);
+  const bboxPx = clampPixelBox(mergedBboxPx, pageSize.width, pageSize.height);
   const sourceText = joinTexts(ordered.map((span) => span.textNormalized), writingMode);
   if (!sourceText) {
     return null;
@@ -320,17 +512,29 @@ function buildCandidateFromGroup(
         .map((candidate) => candidate.textNormalized)
     )
     .filter(Boolean);
+  const typeHint = options?.forcedTypeHint ?? inferBlockType(sourceText, bboxPx, pageSize);
+  const renderBboxPx =
+    options?.renderBboxPx
+      ? clampPixelBox(options.renderBboxPx, pageSize.width, pageSize.height)
+      : undefined;
 
   return {
     pageId,
     bboxPx,
+    renderBboxPx,
+    detectedTextRegionId: options?.detectedTextRegionId,
+    detectedBubbleRegionId: options?.detectedBubbleRegionId,
     sourceText,
-    typeHint: inferBlockType(sourceText, bboxPx, pageSize),
-    confidence: ordered.reduce((sum, span) => sum + span.confidence, 0) / ordered.length,
+    typeHint,
+    confidence: clamp(
+      ordered.reduce((sum, span) => sum + span.confidence, 0) / ordered.length * 0.8 + (options?.detectionScore ?? 0.5) * 0.2,
+      0,
+      1
+    ),
     writingMode,
     sourceSpanIds: ordered.map((span) => span.id),
     readingText: readingText.length > 0 ? joinTexts(readingText, writingMode) : undefined,
-    ocrRawText: rawTexts.join(" | ")
+    ocrRawText: rawTexts.join("\n")
   };
 }
 
@@ -425,6 +629,24 @@ function expandBox(bbox: BBox, pageSize: { width: number; height: number }, rati
   );
 }
 
+function insetBox(bbox: BBox, pageSize: { width: number; height: number }, ratio: number, minPadding: number): BBox {
+  const padding = Math.max(minPadding, Math.round(Math.min(bbox.w, bbox.h) * ratio));
+  return clampPixelBox(
+    {
+      x: bbox.x + padding,
+      y: bbox.y + padding,
+      w: Math.max(1, bbox.w - padding * 2),
+      h: Math.max(1, bbox.h - padding * 2)
+    },
+    pageSize.width,
+    pageSize.height
+  );
+}
+
+function expandBubbleRenderBox(bbox: BBox, pageSize: { width: number; height: number }): BBox {
+  return insetBox(bbox, pageSize, BUBBLE_INSET_RATIO, BUBBLE_INSET_MIN_PX);
+}
+
 function mergeBoxes(boxes: BBox[]): BBox {
   const first = boxes[0];
   if (!first) {
@@ -464,6 +686,26 @@ function overlapRatio1D(startA: number, sizeA: number, startB: number, sizeB: nu
 
 function area(bbox: BBox): number {
   return Math.max(0, bbox.w) * Math.max(0, bbox.h);
+}
+
+function containsPoint(bbox: BBox, x: number, y: number): boolean {
+  return x >= bbox.x && x <= bbox.x + bbox.w && y >= bbox.y && y <= bbox.y + bbox.h;
+}
+
+function intersectionArea(left: BBox, right: BBox): number {
+  const x0 = Math.max(left.x, right.x);
+  const y0 = Math.max(left.y, right.y);
+  const x1 = Math.min(left.x + left.w, right.x + right.w);
+  const y1 = Math.min(left.y + left.h, right.y + right.h);
+  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+}
+
+function intersectionOverUnion(left: BBox, right: BBox): number {
+  const inter = intersectionArea(left, right);
+  if (inter <= 0) {
+    return 0;
+  }
+  return inter / Math.max(1, area(left) + area(right) - inter);
 }
 
 function containsKanji(text: string): boolean {

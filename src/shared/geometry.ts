@@ -36,6 +36,13 @@ export function pixelsToBbox(bbox: BBox, width: number, height: number): BBox {
   });
 }
 
+export function resolveBlockRenderBbox(block: Pick<TranslationBlock, "bbox" | "renderBbox" | "type">): BBox {
+  if (block.renderBbox) {
+    return clampBbox(block.renderBbox);
+  }
+  return clampBbox(block.bbox);
+}
+
 export function shouldRunInpaint(settings: { enabled: boolean }): boolean {
   return settings.enabled;
 }
@@ -111,6 +118,7 @@ function normalizeGemmaBlock(raw: RawGemmaBlock, index: number, pageSize: { widt
   if (!bbox) {
     return null;
   }
+  const renderBbox = readBbox(raw.renderBbox ?? raw.render_bbox);
 
   const type = normalizeBlockType(raw.type);
   const sourceText = String(raw.sourceText ?? raw.source_text ?? "").trim();
@@ -128,6 +136,7 @@ function normalizeGemmaBlock(raw: RawGemmaBlock, index: number, pageSize: { widt
     id: String(raw.id ?? `block-${Date.now()}-${index}`),
     type,
     bbox: normalizedBbox,
+    renderBbox: renderBbox ? clampBbox(renderBbox) : undefined,
     sourceText,
     translatedText,
     confidence: clamp(Number(raw.confidence ?? 0.6), 0, 1),

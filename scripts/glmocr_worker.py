@@ -30,7 +30,9 @@ def main() -> None:
         "GLM-OCR config: "
         f"mode=selfhosted model={parser_kwargs['model']} "
         f"api={parser_kwargs['ocr_api_host']}:{parser_kwargs['ocr_api_port']} "
-        f"layout_device={parser_kwargs['layout_device']}"
+        f"layout_device={parser_kwargs['layout_device']} "
+        f"bbox_scale={(os.getenv('MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE', 'pixel').strip() or 'pixel')} "
+        f"bbox_format={(os.getenv('MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT', 'xyxy').strip() or 'xyxy')}"
     )
 
     with GlmOcr(**parser_kwargs) as parser:
@@ -152,6 +154,9 @@ def extract_single_page(result: dict[str, Any], page: dict[str, Any], fallback_i
 
 
 def coerce_bbox(value: Any, page_width: int, page_height: int) -> dict[str, float] | None:
+    scale_mode = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel").strip() or "pixel").lower()
+    format_mode = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy").strip() or "xyxy").lower()
+
     if isinstance(value, dict):
         x = value.get("x", value.get("left"))
         y = value.get("y", value.get("top"))
@@ -161,12 +166,18 @@ def coerce_bbox(value: Any, page_width: int, page_height: int) -> dict[str, floa
             return {"x": float(x), "y": float(y), "w": float(w), "h": float(h)}
 
     if isinstance(value, list) and len(value) >= 4 and all(isinstance(item, (int, float)) for item in value[:4]):
-        x1, y1, x2, y2 = value[:4]
-        if page_width > 0 and page_height > 0 and max(x1, y1, x2, y2) <= 1000:
+        x1, y1, x2, y2 = [float(item) for item in value[:4]]
+        if scale_mode == "normalized_1000" and page_width > 0 and page_height > 0:
             x1 = float(x1) * page_width / 1000
             y1 = float(y1) * page_height / 1000
             x2 = float(x2) * page_width / 1000
             y2 = float(y2) * page_height / 1000
+
+        if format_mode == "xywh":
+            if x2 > 0 and y2 > 0:
+                return {"x": x1, "y": y1, "w": x2, "h": y2}
+            return None
+
         if x2 > x1 and y2 > y1:
             return {"x": float(x1), "y": float(y1), "w": float(x2 - x1), "h": float(y2 - y1)}
         return {"x": float(x1), "y": float(y1), "w": float(x2), "h": float(y2)}

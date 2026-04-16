@@ -5,7 +5,8 @@ import {
   buildDocumentTranslationBatches,
   chunkTranslationItems,
   getSuspiciousTranslationReason,
-  normalizeGemmaTranslationItems
+  normalizeGemmaTranslationItems,
+  sanitizeOcrModelSource
 } from "../src/shared/documentTranslation";
 import type { MangaPage, RawGemmaTranslationBatch } from "../src/shared/types";
 
@@ -36,7 +37,7 @@ const pageA: MangaPage = {
       opacity: 0.78,
       autoFitText: true,
       readingText: "ざんねん",
-      ocrRawText: "ざんねん | 残念だったな"
+      ocrRawText: "ざんねん\n残念だったな"
     }
   ]
 };
@@ -72,18 +73,20 @@ const pageB: MangaPage = {
 };
 
 describe("document translation batching", () => {
-  it("preserves page order when building document batches", () => {
+  it("skips nearby-page reference context when the target page signal is too small", () => {
     const batches = buildDocumentTranslationBatches(
       [pageA, pageB],
       { maxBlocks: 24, maxPages: 6, maxChars: 99999 }
     );
-    expect(batches).toHaveLength(1);
-    expect(batches[0].items.map((item) => item.blockId)).toEqual(["page-a-block-001", "page-b-block-001"]);
+    expect(batches).toHaveLength(2);
+    expect(batches[0].items.map((item) => item.blockId)).toEqual(["page-a-block-001"]);
     expect(batches[0].items[0].readingText).toBe("ざんねん");
-    expect(batches[0].items[0].ocrRawText).toBe("ざんねん | 残念だったな");
+    expect(batches[0].items[0].ocrRawText).toBe("ざんねん\n残念だったな");
+    expect(batches[0].referenceContext ?? []).toEqual([]);
+    expect(batches[1].referenceContext ?? []).toEqual([]);
   });
 
-  it("splits into multiple batches when block, page, or char limits are exceeded", () => {
+  it("splits large single pages into multiple chunks when block or char limits are exceeded", () => {
     const manyPages: MangaPage[] = Array.from({ length: 7 }, (_, index) => ({
       ...pageA,
       id: `page-${index + 1}`,
@@ -98,14 +101,14 @@ describe("document translation batching", () => {
     }));
 
     const batches = buildDocumentTranslationBatches(manyPages, {
-      maxBlocks: 24,
+      maxBlocks: 1,
       maxPages: 6,
-      maxChars: 9000
+      maxChars: 50
     });
     expect(batches.length).toBeGreaterThan(1);
     expect(batches[0].chunkIndex).toBe(1);
     expect(batches.at(-1)?.totalChunks).toBe(batches.length);
-    expect(new Set(batches[0].items.map((item) => item.pageId)).size).toBeLessThanOrEqual(6);
+    expect(new Set(batches[0].items.map((item) => item.pageId)).size).toBeLessThanOrEqual(1);
   });
 
   it("chunks retry groups into at most eight items", () => {
@@ -145,7 +148,7 @@ describe("document translation batching", () => {
     );
 
     expect(initialPayload).toContain('"gl"');
-    expect(initialPayload).toContain('"s":"ざんねん | 残念だったな"');
+    expect(initialPayload).toContain('"s":"残念だったな"');
     expect(initialPayload).toContain('"r":"ざんねん"');
     expect(initialPayload).toContain('"k":"speech"');
     expect(initialPayload).not.toContain('"o":"');
@@ -186,6 +189,7 @@ describe("document translation batching", () => {
     const pages = applyTranslationBatchToPages([pageA, pageB], raw.items);
     expect(pages[0].blocks[0].translatedText).toBe("아쉽구나");
     expect(pages[0].blocks[0].renderDirection).toBe("horizontal");
+    expect(pages[0].blocks[0].fontSizePx).toBe(32);
     expect(pages[0].blocks[0].autoFitText).toBe(true);
     expect(pages[1].blocks[0].translatedText).toBe("");
   });
@@ -257,9 +261,38 @@ describe("document translation batching", () => {
     ]);
   });
 
+  it("normalizes object-map Gemma output", () => {
+    const normalized = normalizeGemmaTranslationItems({
+      "page-a-block-001": "아쉽구나",
+      "page-b-block-001": "강하네!"
+    });
+
+    expect(normalized).toEqual([
+      {
+        blockId: "page-a-block-001",
+        translatedText: "아쉽구나",
+        type: "",
+        sourceDirection: "",
+        renderDirection: ""
+      },
+      {
+        blockId: "page-b-block-001",
+        translatedText: "강하네!",
+        type: "",
+        sourceDirection: "",
+        renderDirection: ""
+      }
+    ]);
+  });
+
   it("rejects obvious runaway translations", () => {
     expect(getSuspiciousTranslationReason("知らない", "아시라나나나나나나나나나나나나나나나나나나")).toBe("repeated-char-run");
     expect(getSuspiciousTranslationReason("残念だったな", "고마워")).toBeNull();
+  });
+
+  it("rejects prompt or cross-item leaks that include other ids or raw protocol text", () => {
+    expect(getSuspiciousTranslationReason("戻りました", "b2:\"시리우스 주교님이 본부까지 철수하셨습니다.\"")).toBe("cross-item-leak");
+    expect(getSuspiciousTranslationReason("戻りました", "```json{\"items\":{\"b1\":\"다녀왔습니다\"}}")).toBe("prompt-leak");
   });
 
   it("rejects outputs that still contain Japanese instead of Korean", () => {
@@ -269,5 +302,27 @@ describe("document translation batching", () => {
 
   it("rejects source-copy outputs even after punctuation cleanup", () => {
     expect(getSuspiciousTranslationReason("ありがとうおかげで答えは出たわ", "ありがとう、おかげで答えは出たわ")).toBe("contains-japanese-script");
+  });
+
+  it("sanitizes noisy OCR input for the model while preserving readable clauses", () => {
+    expect(
+      sanitizeOcrModelSource("上位種が\n\nせんめつ\n\n全減したのは\n\nしかた\n仕方ありません\n…ですが\n\nシリウス司教\n\nしあう", "せんめつしかたしあう")
+    ).toBe("上位種が\n全減したのは\n仕方ありません\n…ですが\nシリウス司教");
+  });
+
+  it("strips trailing kana echoes that bleed into the next kanji clause", () => {
+    expect(sanitizeOcrModelSource("弱い人の\n名前を覚える\nつもりはない わる\n⋯悪いけど", "わる⋯悪いけど")).toBe(
+      "弱い人の\n名前を覚える\nつもりはない\n⋯悪いけど"
+    );
+  });
+
+  it("flags obviously undertranslated outputs for retry", () => {
+    expect(
+      getSuspiciousTranslationReason(
+        "上位種が\n全減したのは\n仕方ありません\n…ですが\nシリウス司教",
+        "그럴 수밖에 없지만…",
+        { modelSource: "上位種が\n全減したのは\n仕方ありません\n…ですが\nシリウス司教" }
+      )
+    ).toBe("undertranslated");
   });
 });

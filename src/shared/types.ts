@@ -2,10 +2,6 @@ export type BlockType = "speech" | "sfx" | "sign" | "caption" | "handwriting" | 
 
 export type TextDirection = "horizontal" | "vertical" | "rotated" | "hidden";
 
-export type DetectionLabel = "bubble" | "text_bubble" | "text_free";
-
-export type CropTile = "A" | "B" | "C" | "D";
-
 export type JobKind = "gemma-analysis" | "inpaint";
 
 export type JobStatus =
@@ -28,6 +24,9 @@ export type TranslationBlock = {
   id: string;
   type: BlockType;
   bbox: BBox;
+  renderBbox?: BBox;
+  bboxSpace?: "normalized_1000" | "pixels";
+  renderBboxSpace?: "normalized_1000" | "pixels";
   sourceText: string;
   translatedText: string;
   confidence: number;
@@ -86,13 +85,6 @@ export type JobEvent = JobState & {
 
 export type AnalysisRequestPage = Pick<MangaPage, "id" | "name" | "imagePath" | "dataUrl" | "width" | "height">;
 
-export type DetectedRegion = {
-  id: string;
-  label: DetectionLabel;
-  score: number;
-  bboxPx: BBox;
-};
-
 export type OcrWritingMode = "horizontal" | "vertical" | "unknown";
 
 export type OcrSpan = {
@@ -112,6 +104,9 @@ export type OcrBlockCandidate = {
   blockId: string;
   pageId: string;
   bboxPx: BBox;
+  renderBboxPx?: BBox;
+  detectedTextRegionId?: string;
+  detectedBubbleRegionId?: string;
   sourceText: string;
   typeHint: BlockType;
   confidence: number;
@@ -119,6 +114,21 @@ export type OcrBlockCandidate = {
   sourceSpanIds: string[];
   readingText?: string;
   ocrRawText?: string;
+};
+
+export type DetectedTextRegion = {
+  id: string;
+  pageId: string;
+  bboxPx: BBox;
+  score: number;
+  kind: "bubble" | "free";
+};
+
+export type DetectedBubbleRegion = {
+  id: string;
+  pageId: string;
+  bboxPx: BBox;
+  score: number;
 };
 
 export type DocumentTranslationBatchItem = {
@@ -132,6 +142,11 @@ export type DocumentTranslationBatchItem = {
   readingText?: string;
   ocrRawText?: string;
   ocrConfidence?: number;
+  prevContext?: string;
+  nextContext?: string;
+  retryCount?: number;
+  rejectedReason?: string;
+  rejectedOutput?: string;
 };
 
 export type DocumentBatchLimits = {
@@ -148,43 +163,15 @@ export type DocumentTranslationBatch = {
     sourceText: string;
     translatedText: string;
   }>;
+  pageImageDataUrl?: string;
+  referenceContext?: Array<{
+    relation: "prev" | "next" | "same";
+    pageName: string;
+    snippets: string[];
+  }>;
 };
 
 export type GemmaRequestMode = "initial" | "group" | "single" | "repair";
-
-export type DetectedTextTarget = {
-  id: string;
-  sourceRegionIds: string[];
-  typeHint: BlockType;
-  anchorBboxPx: BBox;
-  cropBboxPx: BBox;
-};
-
-export type CropGroup = {
-  id: string;
-  tile: CropTile;
-  sourceRegionIds: string[];
-  bboxPx: BBox;
-};
-
-export type CropBoardEntry = {
-  cropId: string;
-  tile: CropTile;
-  sourceRegionIds: string[];
-  sourceBboxPx: BBox;
-  tileBboxPx: BBox;
-  contentBboxPx: BBox;
-  scale: number;
-};
-
-export type CropBoardManifest = {
-  pageId: string;
-  width: number;
-  height: number;
-  boardWidth: number;
-  boardHeight: number;
-  crops: CropBoardEntry[];
-};
 
 export type StartAnalysisRequest = {
   pages: AnalysisRequestPage[];
@@ -203,6 +190,8 @@ export type RawGemmaBlock = Partial<{
   id: string;
   type: string;
   bbox: Partial<BBox> | number[];
+  renderBbox: Partial<BBox> | number[];
+  render_bbox: Partial<BBox> | number[];
   sourceText: string;
   source_text: string;
   translatedText: string;
@@ -236,47 +225,6 @@ export type RawGemmaAnalysis = Partial<{
   blocks: RawGemmaBlock[];
 }>;
 
-export type RawCropBatchAnalysis = Partial<{
-  crops: Array<
-    Partial<{
-      cropId: string;
-      blocks: RawGemmaBlock[];
-    }>
-  >;
-  warnings: string[];
-}>;
-
-export type RawTargetBatchItem = Partial<{
-  targetId: string;
-  type: string;
-  sourceText: string;
-  source_text: string;
-  translatedText: string;
-  translated_text: string;
-  translation: string;
-  confidence: number;
-  sourceDirection: string;
-  source_direction: string;
-  renderDirection: string;
-  render_direction: string;
-  fontSizePx: number;
-  font_size_px: number;
-  lineHeight: number;
-  line_height: number;
-  textAlign: string;
-  text_align: string;
-  textColor: string;
-  text_color: string;
-  backgroundColor: string;
-  background_color: string;
-  opacity: number;
-}>;
-
-export type RawTargetBatchAnalysis = Partial<{
-  items: RawTargetBatchItem[];
-  warnings: string[];
-}>;
-
 export type RawGemmaTranslationItem = Partial<{
   blockId: string;
   id: string;
@@ -308,6 +256,6 @@ export type RawGemmaTranslationItem = Partial<{
 }>;
 
 export type RawGemmaTranslationBatch = Partial<{
-  items: RawGemmaTranslationItem[];
+  items: unknown;
   warnings: string[];
 }>;

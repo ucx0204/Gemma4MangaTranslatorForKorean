@@ -90,6 +90,190 @@ describe("OCR normalization and block building", () => {
     expect(blocks[0].autoFitText).toBe(true);
   });
 
+  it("preserves a separately fitted render box when layout detection expands a speech bubble", () => {
+    const page: AnalysisRequestPage = {
+      id: "page-1",
+      name: "page.png",
+      imagePath: "page.png",
+      dataUrl: "",
+      width: 1000,
+      height: 1600
+    };
+
+    const candidates = [
+      {
+        blockId: "page-1-block-001",
+        pageId: "page-1",
+        bboxPx: { x: 120, y: 200, w: 90, h: 320 },
+        renderBboxPx: { x: 80, y: 160, w: 180, h: 420 },
+        sourceText: "生きていられたのに",
+        typeHint: "speech" as const,
+        confidence: 0.93,
+        writingMode: "vertical" as const,
+        sourceSpanIds: ["line-1"]
+      }
+    ];
+
+    const blocks = ocrCandidatesToTranslationBlocks(page, candidates);
+    expect(blocks[0].bbox).toEqual({ x: 120, y: 125, w: 90, h: 200 });
+    expect(blocks[0].renderBbox).toEqual({ x: 80, y: 100, w: 180, h: 262.5 });
+    expect(blocks[0].fontSizePx).toBeGreaterThan(12);
+  });
+
+  it("keeps the OCR span box as the editable anchor while using detector bubbles as render boxes", () => {
+    const page: AnalysisRequestPage = {
+      id: "page-1",
+      name: "page.png",
+      imagePath: "page.png",
+      dataUrl: "",
+      width: 1000,
+      height: 1600
+    };
+
+    const spans: OcrSpan[] = [
+      {
+        id: "line-1",
+        pageId: "page-1",
+        bboxPx: { x: 120, y: 200, w: 90, h: 160 },
+        textRaw: "生きて",
+        textNormalized: "生きて",
+        confidence: 0.93,
+        writingMode: "vertical"
+      },
+      {
+        id: "line-2",
+        pageId: "page-1",
+        bboxPx: { x: 210, y: 200, w: 90, h: 180 },
+        textRaw: "いられたのに",
+        textNormalized: "いられたのに",
+        confidence: 0.91,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates(
+      "page-1",
+      spans,
+      { width: 1000, height: 1600 },
+      {
+        textRegions: [
+          {
+            id: "page-1-text-001",
+            pageId: "page-1",
+            bboxPx: { x: 100, y: 180, w: 240, h: 260 },
+            score: 0.92,
+            kind: "bubble"
+          }
+        ],
+        bubbleRegions: [
+          {
+            id: "page-1-bubble-001",
+            pageId: "page-1",
+            bboxPx: { x: 80, y: 140, w: 320, h: 360 },
+            score: 0.95
+          }
+        ]
+      }
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].bboxPx).toEqual({ x: 106, y: 186, w: 208, h: 208 });
+    expect(candidates[0].renderBboxPx).toEqual({ x: 86, y: 146, w: 308, h: 348 });
+    expect(candidates[0].detectedTextRegionId).toBe("page-1-text-001");
+    expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-001");
+  });
+
+  it("keeps unmatched OCR spans instead of dropping them when detector coverage is partial", () => {
+    const spans: OcrSpan[] = [
+      {
+        id: "covered",
+        pageId: "page-1",
+        bboxPx: { x: 120, y: 200, w: 90, h: 160 },
+        textRaw: "生きて",
+        textNormalized: "生きて",
+        confidence: 0.93,
+        writingMode: "vertical"
+      },
+      {
+        id: "orphan",
+        pageId: "page-1",
+        bboxPx: { x: 520, y: 640, w: 110, h: 180 },
+        textRaw: "まだだ",
+        textNormalized: "まだだ",
+        confidence: 0.9,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates(
+      "page-1",
+      spans,
+      { width: 1000, height: 1600 },
+      {
+        textRegions: [
+          {
+            id: "page-1-text-001",
+            pageId: "page-1",
+            bboxPx: { x: 100, y: 180, w: 180, h: 240 },
+            score: 0.92,
+            kind: "bubble"
+          }
+        ],
+        bubbleRegions: [
+          {
+            id: "page-1-bubble-001",
+            pageId: "page-1",
+            bboxPx: { x: 80, y: 140, w: 240, h: 320 },
+            score: 0.95
+          }
+        ]
+      }
+    );
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.sourceText).sort()).toEqual(["まだだ", "生きて"]);
+    const orphanCandidate = candidates.find((candidate) => candidate.sourceText === "まだだ");
+    expect(orphanCandidate?.detectedTextRegionId).toBeUndefined();
+    expect(orphanCandidate?.bboxPx).toEqual({ x: 508, y: 628, w: 134, h: 204 });
+    expect(orphanCandidate?.renderBboxPx).toBeUndefined();
+  });
+
+  it("uses a detected bubble as the render box even when only OCR spans matched", () => {
+    const spans: OcrSpan[] = [
+      {
+        id: "orphan",
+        pageId: "page-1",
+        bboxPx: { x: 520, y: 640, w: 110, h: 180 },
+        textRaw: "まだだ",
+        textNormalized: "まだだ",
+        confidence: 0.9,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates(
+      "page-1",
+      spans,
+      { width: 1000, height: 1600 },
+      {
+        textRegions: [],
+        bubbleRegions: [
+          {
+            id: "page-1-bubble-009",
+            pageId: "page-1",
+            bboxPx: { x: 480, y: 580, w: 220, h: 320 },
+            score: 0.91
+          }
+        ]
+      }
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-009");
+    expect(candidates[0].renderBboxPx).toEqual({ x: 484, y: 584, w: 212, h: 312 });
+    expect(candidates[0].typeHint).toBe("speech");
+  });
+
   it("uses raw OCR text as the editable block source when available", () => {
     const page: AnalysisRequestPage = {
       id: "page-1",
