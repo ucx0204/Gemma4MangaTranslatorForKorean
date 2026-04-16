@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { clampBbox, enforceRenderDirection, normalizeGemmaAnalysis, resolveBlockRenderBbox, shouldConfirmRestart, shouldRunInpaint } from "../src/shared/geometry";
+import {
+  applyEditableBlockBbox,
+  clampBbox,
+  enforceRenderDirection,
+  estimateBlockFontSizePx,
+  normalizeGemmaAnalysis,
+  offsetBlockBboxes,
+  resolveBlockRenderBbox,
+  shouldConfirmRestart,
+  shouldRunInpaint
+} from "../src/shared/geometry";
 import type { RawGemmaAnalysis } from "../src/shared/types";
 
 describe("geometry and block normalization", () => {
@@ -24,6 +34,81 @@ describe("geometry and block normalization", () => {
         bbox: { x: 100, y: 120, w: 180, h: 220 }
       })
     ).toEqual({ x: 100, y: 120, w: 180, h: 220 });
+  });
+
+  it("estimates font size from renderBbox when a dedicated layout box exists", () => {
+    const bboxOnly = estimateBlockFontSizePx(
+      "한국어 번역문",
+      {
+        type: "speech",
+        bbox: { x: 100, y: 100, w: 80, h: 100 }
+      },
+      { width: 1000, height: 1600 }
+    );
+    const withRenderBbox = estimateBlockFontSizePx(
+      "한국어 번역문",
+      {
+        type: "speech",
+        bbox: { x: 100, y: 100, w: 80, h: 100 },
+        renderBbox: { x: 80, y: 80, w: 240, h: 240 }
+      },
+      { width: 1000, height: 1600 }
+    );
+
+    expect(withRenderBbox).toBeGreaterThan(bboxOnly);
+  });
+
+  it("updates renderBbox first when dragging an editable block with a dedicated layout box", () => {
+    const next = applyEditableBlockBbox(
+      {
+        id: "block-1",
+        type: "speech",
+        bbox: { x: 100, y: 100, w: 80, h: 120 },
+        renderBbox: { x: 80, y: 90, w: 220, h: 260 },
+        sourceText: "",
+        translatedText: "",
+        confidence: 1,
+        sourceDirection: "vertical",
+        renderDirection: "horizontal",
+        fontSizePx: 24,
+        lineHeight: 1.18,
+        textAlign: "center",
+        textColor: "#111111",
+        backgroundColor: "#fffdf5",
+        opacity: 0.8
+      },
+      { x: 120, y: 140, w: 240, h: 280 }
+    );
+
+    expect(next.bbox).toEqual({ x: 100, y: 100, w: 80, h: 120 });
+    expect(next.renderBbox).toEqual({ x: 120, y: 140, w: 240, h: 280 });
+  });
+
+  it("offsets both source and render boxes when duplicating a block", () => {
+    const duplicated = offsetBlockBboxes(
+      {
+        id: "block-1",
+        type: "speech",
+        bbox: { x: 100, y: 100, w: 80, h: 120 },
+        renderBbox: { x: 80, y: 90, w: 220, h: 260 },
+        sourceText: "",
+        translatedText: "",
+        confidence: 1,
+        sourceDirection: "vertical",
+        renderDirection: "horizontal",
+        fontSizePx: 24,
+        lineHeight: 1.18,
+        textAlign: "center",
+        textColor: "#111111",
+        backgroundColor: "#fffdf5",
+        opacity: 0.8
+      },
+      16,
+      16
+    );
+
+    expect(duplicated.bbox).toEqual({ x: 116, y: 116, w: 80, h: 120 });
+    expect(duplicated.renderBbox).toEqual({ x: 96, y: 106, w: 220, h: 260 });
   });
 
   it("normalizes Gemma output and preserves non-speech direction", () => {

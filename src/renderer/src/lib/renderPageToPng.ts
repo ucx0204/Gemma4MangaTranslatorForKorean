@@ -1,10 +1,13 @@
 import type { MangaPage, TranslationBlock } from "../../../shared/types";
-import { bboxToPixels, clamp } from "../../../shared/geometry";
+import { bboxToPixels, clamp, resolveBlockRenderBbox } from "../../../shared/geometry";
 
-const MEASURE_CANVAS = document.createElement("canvas");
-const BLOCK_PADDING_PX = 8;
 const MIN_FONT_SIZE_PX = 8;
 const MAX_AUTOFIT_FONT_SIZE_PX = 256;
+const MIN_BLOCK_PADDING_PX = 2;
+const MAX_BLOCK_PADDING_PX = 8;
+const MIN_INNER_SIZE_PX = 12;
+
+let measureCanvas: HTMLCanvasElement | null = null;
 
 export type ViewportSize = {
   width: number;
@@ -16,6 +19,15 @@ export type PixelRect = {
   top: number;
   width: number;
   height: number;
+};
+
+export type BlockTextLayout = {
+  rect: PixelRect;
+  paddingPx: number;
+  innerWidth: number;
+  innerHeight: number;
+  fontSizePx: number;
+  overflow: boolean;
 };
 
 export async function renderPageToPng(page: MangaPage, imageElement: HTMLImageElement): Promise<string> {
@@ -46,17 +58,40 @@ export async function renderPageToPng(page: MangaPage, imageElement: HTMLImageEl
 }
 
 export function resolveOverlayFontSizePx(block: TranslationBlock, text: string, pageSize: ViewportSize, stageSize: ViewportSize): number {
+  return resolveBlockTextLayout(block, text, pageSize, stageSize).fontSizePx;
+}
+
+export function resolveBlockPaddingPx(rect: PixelRect): number {
+  return Math.round(clamp(Math.min(rect.width, rect.height) * 0.06, MIN_BLOCK_PADDING_PX, MAX_BLOCK_PADDING_PX));
+}
+
+export function resolveBlockTextLayout(
+  block: TranslationBlock,
+  text: string,
+  pageSize: ViewportSize,
+  stageSize: ViewportSize
+): BlockTextLayout {
   const rect = resolveBlockRectPx(block, pageSize, stageSize);
+  const paddingPx = resolveBlockPaddingPx(rect);
+  const innerWidth = Math.max(MIN_INNER_SIZE_PX, rect.width - paddingPx * 2);
+  const innerHeight = Math.max(MIN_INNER_SIZE_PX, rect.height - paddingPx * 2);
   const scale = Math.min(stageSize.width / Math.max(1, pageSize.width), stageSize.height / Math.max(1, pageSize.height));
   const preferredFontSize = Math.max(MIN_FONT_SIZE_PX, Math.floor(block.fontSizePx * scale));
-  const innerWidth = Math.max(12, rect.width - BLOCK_PADDING_PX * 2);
-  const innerHeight = Math.max(12, rect.height - BLOCK_PADDING_PX * 2);
   const maxFontSize = resolveAutoFitUpperBound(block, preferredFontSize, innerWidth, innerHeight);
-  return resolveTextFontSizePx(block, text, maxFontSize, innerWidth, innerHeight);
+  const fontSizePx = resolveTextFontSizePx(block, text, maxFontSize, innerWidth, innerHeight);
+
+  return {
+    rect,
+    paddingPx,
+    innerWidth,
+    innerHeight,
+    fontSizePx,
+    overflow: text.trim() ? !doesTextFit(block, text, fontSizePx, innerWidth, innerHeight) : false
+  };
 }
 
 export function resolveBlockRectPx(block: TranslationBlock, pageSize: ViewportSize, stageSize: ViewportSize): PixelRect {
-  const pixelRect = bboxToPixels(block.bbox, pageSize.width, pageSize.height);
+  const pixelRect = bboxToPixels(resolveBlockRenderBbox(block), pageSize.width, pageSize.height);
   const scaleX = stageSize.width / Math.max(1, pageSize.width);
   const scaleY = stageSize.height / Math.max(1, pageSize.height);
 
@@ -77,11 +112,9 @@ export function hexToRgba(hex: string, alpha: number): string {
 }
 
 function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, width: number, height: number): void {
-  const rect = resolveBlockRectPx(block, { width, height }, { width, height });
   const displayText = block.translatedText || block.sourceText || "...";
-  const fontSizePx = resolveCanvasFontSizePx(block, displayText, { width, height });
-  const innerWidth = Math.max(12, rect.width - BLOCK_PADDING_PX * 2);
-  const innerHeight = Math.max(12, rect.height - BLOCK_PADDING_PX * 2);
+  const layout = resolveBlockTextLayout(block, displayText, { width, height }, { width, height });
+  const { rect, paddingPx, innerWidth, innerHeight, fontSizePx } = layout;
   context.save();
   context.fillStyle = hexToRgba(block.backgroundColor, block.opacity);
   context.fillRect(rect.left, rect.top, rect.width, rect.height);
@@ -92,25 +125,25 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
   const wrapped = block.renderDirection === "vertical" ? null : measureWrappedText(context, displayText, innerWidth, fontSizePx * block.lineHeight);
   const textX =
     block.textAlign === "left"
-      ? rect.left + BLOCK_PADDING_PX
+      ? rect.left + paddingPx
       : block.textAlign === "right"
-        ? rect.left + rect.width - BLOCK_PADDING_PX
+        ? rect.left + rect.width - paddingPx
         : rect.left + rect.width / 2;
   const startY =
     rect.top +
-    BLOCK_PADDING_PX +
+    paddingPx +
     Math.max(
       0,
       (innerHeight - (wrapped ? wrapped.totalHeight : estimateVerticalContentHeight(displayText, fontSizePx, innerHeight))) / 2
     );
 
   if (block.renderDirection === "vertical") {
-    drawVerticalText(context, displayText, rect.left + BLOCK_PADDING_PX, startY, innerWidth, innerHeight, fontSizePx);
+    drawVerticalText(context, displayText, rect.left + paddingPx, startY, innerWidth, innerHeight, fontSizePx);
   } else if (block.renderDirection === "rotated") {
     context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
     context.rotate((-8 * Math.PI) / 180);
     const rotatedWrapped = measureWrappedText(context, displayText, innerWidth, fontSizePx * block.lineHeight);
-    const rotatedStartY = -rect.height / 2 + BLOCK_PADDING_PX + Math.max(0, (innerHeight - rotatedWrapped.totalHeight) / 2);
+    const rotatedStartY = -rect.height / 2 + paddingPx + Math.max(0, (innerHeight - rotatedWrapped.totalHeight) / 2);
     drawWrappedText(context, rotatedWrapped.lines, textX - (rect.left + rect.width / 2), rotatedStartY, innerWidth, fontSizePx * block.lineHeight, block.textAlign);
   } else {
     drawWrappedText(context, wrapped?.lines ?? [displayText], textX, startY, innerWidth, fontSizePx * block.lineHeight, block.textAlign);
@@ -161,14 +194,6 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error("Failed to load image"));
     image.src = src;
   });
-}
-
-function resolveCanvasFontSizePx(block: TranslationBlock, text: string, pageSize: ViewportSize): number {
-  const rect = resolveBlockRectPx(block, pageSize, pageSize);
-  const innerWidth = Math.max(12, rect.width - BLOCK_PADDING_PX * 2);
-  const innerHeight = Math.max(12, rect.height - BLOCK_PADDING_PX * 2);
-  const maxFontSize = resolveAutoFitUpperBound(block, block.fontSizePx, innerWidth, innerHeight);
-  return resolveTextFontSizePx(block, text, maxFontSize, innerWidth, innerHeight);
 }
 
 function resolveTextFontSizePx(
@@ -286,7 +311,12 @@ function resolveAutoFitUpperBound(block: TranslationBlock, preferredFontSize: nu
 }
 
 function getMeasureContext(): CanvasRenderingContext2D {
-  const context = MEASURE_CANVAS.getContext("2d");
+  if (typeof document === "undefined") {
+    throw new Error("Document is not available for canvas text measurement");
+  }
+
+  measureCanvas ??= document.createElement("canvas");
+  const context = measureCanvas.getContext("2d");
   if (!context) {
     throw new Error("Canvas context is not available");
   }

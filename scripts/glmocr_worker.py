@@ -31,7 +31,7 @@ def main() -> None:
         f"mode=selfhosted model={parser_kwargs['model']} "
         f"api={parser_kwargs['ocr_api_host']}:{parser_kwargs['ocr_api_port']} "
         f"layout_device={parser_kwargs['layout_device']} "
-        f"bbox_scale={(os.getenv('MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE', 'pixel').strip() or 'pixel')} "
+        f"bbox_scale={(os.getenv('MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE', 'auto').strip() or 'auto')} "
         f"bbox_format={(os.getenv('MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT', 'xyxy').strip() or 'xyxy')}"
     )
 
@@ -122,13 +122,27 @@ def extract_single_page(result: dict[str, Any], page: dict[str, Any], fallback_i
         elif len(raw_pages) == 1 and isinstance(raw_pages[0], list):
             page_regions = raw_pages[0]
 
+    page_width = int(page.get("width") or 0)
+    page_height = int(page.get("height") or 0)
+    format_mode = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy").strip() or "xyxy").lower()
+    scale_mode, max_x, max_y = resolve_scale_mode(page_regions, page_width, page_height, format_mode)
+    log(
+        "[glmocr bbox scale] "
+        f"page={page.get('id', fallback_index)} "
+        f"size={page_width}x{page_height} "
+        f"max_x={max_x:.2f} "
+        f"max_y={max_y:.2f} "
+        f"chosen={scale_mode} "
+        f"format={format_mode}"
+    )
+
     spans = []
     for index, region in enumerate(page_regions):
         if not isinstance(region, dict):
             continue
 
         text = str(region.get("content") or region.get("text") or "").strip()
-        bbox = coerce_bbox(region.get("bbox_2d") or region.get("bbox"), int(page.get("width") or 0), int(page.get("height") or 0))
+        bbox = coerce_bbox(region.get("bbox_2d") or region.get("bbox"), page_width, page_height, scale_mode=scale_mode, format_mode=format_mode)
         if not text or not bbox:
             continue
 
@@ -153,9 +167,75 @@ def extract_single_page(result: dict[str, Any], page: dict[str, Any], fallback_i
     return {"id": page["id"], "spans": spans}
 
 
-def coerce_bbox(value: Any, page_width: int, page_height: int) -> dict[str, float] | None:
-    scale_mode = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel").strip() or "pixel").lower()
-    format_mode = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy").strip() or "xyxy").lower()
+def resolve_scale_mode(
+    page_regions: list[Any], page_width: int, page_height: int, format_mode: str
+) -> tuple[str, float, float]:
+    configured = (os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "auto").strip() or "auto").lower()
+    max_x, max_y = extract_bbox_extents(page_regions, format_mode)
+    if configured != "auto":
+        return configured, max_x, max_y
+    return infer_bbox_scale_from_extents(page_width, page_height, max_x, max_y), max_x, max_y
+
+
+def infer_bbox_scale_from_extents(page_width: int, page_height: int, max_x: float, max_y: float) -> str:
+    if max_x <= 0 or max_y <= 0:
+        return "pixel"
+
+    if max(page_width, page_height) <= 1200:
+        return "pixel"
+
+    near_normalized_ceiling = max(max_x, max_y) >= 850
+    if near_normalized_ceiling and page_width > 1200 and page_height > 1200 and max_x <= 1000 and max_y <= 1000:
+        return "normalized_1000"
+
+    if near_normalized_ceiling and page_height > 1500 and max_y <= 1000:
+        return "normalized_1000"
+
+    if near_normalized_ceiling and page_width > 1500 and max_x <= 1000:
+        return "normalized_1000"
+
+    return "pixel"
+
+
+def extract_bbox_extents(page_regions: list[Any], format_mode: str) -> tuple[float, float]:
+    max_x = 0.0
+    max_y = 0.0
+
+    for region in page_regions:
+        if not isinstance(region, dict):
+            continue
+
+        value = region.get("bbox_2d") or region.get("bbox")
+        bbox_max_x, bbox_max_y = extract_single_bbox_extent(value, format_mode)
+        max_x = max(max_x, bbox_max_x)
+        max_y = max(max_y, bbox_max_y)
+
+    return max_x, max_y
+
+
+def extract_single_bbox_extent(value: Any, format_mode: str) -> tuple[float, float]:
+    if isinstance(value, dict):
+        x = value.get("x", value.get("left"))
+        y = value.get("y", value.get("top"))
+        w = value.get("w", value.get("width"))
+        h = value.get("h", value.get("height"))
+        if all(isinstance(item, (int, float)) for item in (x, y, w, h)):
+            return float(x) + float(w), float(y) + float(h)
+
+    if isinstance(value, list) and len(value) >= 4 and all(isinstance(item, (int, float)) for item in value[:4]):
+        x1, y1, x2, y2 = [float(item) for item in value[:4]]
+        if format_mode == "xywh":
+            return x1 + max(0.0, x2), y1 + max(0.0, y2)
+        return max(x1, x2), max(y1, y2)
+
+    return 0.0, 0.0
+
+
+def coerce_bbox(
+    value: Any, page_width: int, page_height: int, scale_mode: str | None = None, format_mode: str | None = None
+) -> dict[str, float] | None:
+    scale_mode = (scale_mode or os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "auto").strip() or "auto").lower()
+    format_mode = (format_mode or os.getenv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy").strip() or "xyxy").lower()
 
     if isinstance(value, dict):
         x = value.get("x", value.get("left"))
@@ -163,10 +243,27 @@ def coerce_bbox(value: Any, page_width: int, page_height: int) -> dict[str, floa
         w = value.get("w", value.get("width"))
         h = value.get("h", value.get("height"))
         if all(isinstance(item, (int, float)) for item in (x, y, w, h)):
-            return {"x": float(x), "y": float(y), "w": float(w), "h": float(h)}
+            if scale_mode == "auto":
+                inferred_x, inferred_y = extract_single_bbox_extent(value, format_mode)
+                scale_mode = infer_bbox_scale_from_extents(page_width, page_height, inferred_x, inferred_y)
+
+            x = float(x)
+            y = float(y)
+            w = float(w)
+            h = float(h)
+            if scale_mode == "normalized_1000" and page_width > 0 and page_height > 0:
+                x = x * page_width / 1000
+                y = y * page_height / 1000
+                w = w * page_width / 1000
+                h = h * page_height / 1000
+
+            return {"x": x, "y": y, "w": w, "h": h}
 
     if isinstance(value, list) and len(value) >= 4 and all(isinstance(item, (int, float)) for item in value[:4]):
         x1, y1, x2, y2 = [float(item) for item in value[:4]]
+        if scale_mode == "auto":
+            inferred_x, inferred_y = extract_single_bbox_extent(value, format_mode)
+            scale_mode = infer_bbox_scale_from_extents(page_width, page_height, inferred_x, inferred_y)
         if scale_mode == "normalized_1000" and page_width > 0 and page_height > 0:
             x1 = float(x1) * page_width / 1000
             y1 = float(y1) * page_height / 1000

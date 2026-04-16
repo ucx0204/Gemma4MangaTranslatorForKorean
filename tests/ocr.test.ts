@@ -238,6 +238,66 @@ describe("OCR normalization and block building", () => {
     expect(orphanCandidate?.renderBboxPx).toBeUndefined();
   });
 
+  it("does not merge spans that fall into different detected bubbles even inside one broad text region", () => {
+    const spans: OcrSpan[] = [
+      {
+        id: "left",
+        pageId: "page-1",
+        bboxPx: { x: 140, y: 220, w: 70, h: 180 },
+        textRaw: "왼쪽",
+        textNormalized: "왼쪽",
+        confidence: 0.94,
+        writingMode: "vertical"
+      },
+      {
+        id: "right",
+        pageId: "page-1",
+        bboxPx: { x: 460, y: 220, w: 70, h: 180 },
+        textRaw: "오른쪽",
+        textNormalized: "오른쪽",
+        confidence: 0.94,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates(
+      "page-1",
+      spans,
+      { width: 1000, height: 1600 },
+      {
+        textRegions: [
+          {
+            id: "page-1-text-wide",
+            pageId: "page-1",
+            bboxPx: { x: 100, y: 180, w: 480, h: 280 },
+            score: 0.91,
+            kind: "bubble"
+          }
+        ],
+        bubbleRegions: [
+          {
+            id: "page-1-bubble-left",
+            pageId: "page-1",
+            bboxPx: { x: 100, y: 180, w: 180, h: 280 },
+            score: 0.95
+          },
+          {
+            id: "page-1-bubble-right",
+            pageId: "page-1",
+            bboxPx: { x: 420, y: 180, w: 180, h: 280 },
+            score: 0.95
+          }
+        ]
+      }
+    );
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.detectedBubbleRegionId).sort()).toEqual([
+      "page-1-bubble-left",
+      "page-1-bubble-right"
+    ]);
+  });
+
   it("uses a detected bubble as the render box even when only OCR spans matched", () => {
     const spans: OcrSpan[] = [
       {
@@ -272,6 +332,46 @@ describe("OCR normalization and block building", () => {
     expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-009");
     expect(candidates[0].renderBboxPx).toEqual({ x: 484, y: 584, w: 212, h: 312 });
     expect(candidates[0].typeHint).toBe("speech");
+  });
+
+  it("downranks oversized bubble candidates in favor of a tighter match", () => {
+    const spans: OcrSpan[] = [
+      {
+        id: "orphan",
+        pageId: "page-1",
+        bboxPx: { x: 520, y: 640, w: 110, h: 180 },
+        textRaw: "まだだ",
+        textNormalized: "まだだ",
+        confidence: 0.9,
+        writingMode: "vertical"
+      }
+    ];
+
+    const candidates = buildOcrBlockCandidates(
+      "page-1",
+      spans,
+      { width: 1000, height: 1600 },
+      {
+        textRegions: [],
+        bubbleRegions: [
+          {
+            id: "page-1-bubble-huge",
+            pageId: "page-1",
+            bboxPx: { x: 0, y: 0, w: 900, h: 1300 },
+            score: 0.99
+          },
+          {
+            id: "page-1-bubble-snug",
+            pageId: "page-1",
+            bboxPx: { x: 480, y: 580, w: 220, h: 320 },
+            score: 0.91
+          }
+        ]
+      }
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-snug");
   });
 
   it("uses raw OCR text as the editable block source when available", () => {

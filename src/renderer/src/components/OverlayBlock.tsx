@@ -1,6 +1,6 @@
 import React from "react";
 import type { TranslationBlock } from "../../../shared/types";
-import { hexToRgba, resolveOverlayFontSizePx, type ViewportSize } from "../lib/renderPageToPng";
+import { hexToRgba, resolveBlockTextLayout, type ViewportSize } from "../lib/renderPageToPng";
 
 type OverlayBlockProps = {
   block: TranslationBlock;
@@ -24,28 +24,39 @@ export function OverlayBlock({
   }
 
   const displayText = block.translatedText || block.sourceText || "...";
-  const fontSizePx = resolveOverlayFontSizePx(block, displayText, pageSize, stageSize);
+  const layout = resolveBlockTextLayout(block, displayText, pageSize, stageSize);
   const style: React.CSSProperties = {
-    left: `${block.bbox.x / 10}%`,
-    top: `${block.bbox.y / 10}%`,
-    width: `${block.bbox.w / 10}%`,
-    height: `${block.bbox.h / 10}%`,
+    left: layout.rect.left,
+    top: layout.rect.top,
+    width: layout.rect.width,
+    height: layout.rect.height,
+    padding: layout.paddingPx,
+    overflow: layout.overflow ? "visible" : "hidden",
     color: block.textColor,
     backgroundColor: hexToRgba(block.backgroundColor, block.opacity),
-    fontSize: `${fontSizePx}px`,
+    fontSize: `${layout.fontSizePx}px`,
     lineHeight: block.lineHeight,
     textAlign: block.textAlign
+  };
+  const textWrapStyle: React.CSSProperties = {
+    overflow: layout.overflow ? "visible" : "hidden"
   };
   const contentStyle: React.CSSProperties = {
     writingMode: block.renderDirection === "vertical" ? "vertical-rl" : "horizontal-tb",
     transform: block.renderDirection === "rotated" ? "rotate(-8deg)" : undefined,
     transformOrigin: "center center",
-    width: block.renderDirection === "vertical" ? "auto" : "100%"
+    width: block.renderDirection === "vertical" ? "auto" : "100%",
+    maxHeight: layout.overflow ? "none" : "100%"
   };
 
   return (
-    <div className={selected ? "overlay-block selected" : "overlay-block"} style={style} onPointerDown={onPointerDown}>
-      <div className="overlay-text">
+    <div
+      className={`${selected ? "overlay-block selected" : "overlay-block"}${layout.overflow ? " overflowing" : ""}`}
+      style={style}
+      title={layout.overflow ? "현재 render box보다 번역문이 길어서 넘칩니다." : undefined}
+      onPointerDown={onPointerDown}
+    >
+      <div className="overlay-text" style={textWrapStyle}>
         <span className="overlay-text-content" style={contentStyle}>
           {displayText}
         </span>

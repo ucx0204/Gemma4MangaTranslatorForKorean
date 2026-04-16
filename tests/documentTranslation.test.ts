@@ -194,6 +194,44 @@ describe("document translation batching", () => {
     expect(pages[1].blocks[0].translatedText).toBe("");
   });
 
+  it("re-estimates translated font size from renderBbox and uses horizontal line height defaults", () => {
+    const raw: RawGemmaTranslationBatch = {
+      items: [
+        {
+          blockId: "page-a-block-001",
+          translatedText: "한국어 번역문이 들어갑니다",
+          type: "speech",
+          renderDirection: "horizontal"
+        }
+      ]
+    };
+
+    const pageWithRenderBox: MangaPage = {
+      ...pageA,
+      blocks: [
+        {
+          ...pageA.blocks[0],
+          bbox: { x: 100, y: 120, w: 80, h: 100 },
+          renderBbox: { x: 80, y: 100, w: 260, h: 260 },
+          lineHeight: 1.05
+        }
+      ]
+    };
+
+    const pageWithoutRenderBox: MangaPage = {
+      ...pageWithRenderBox,
+      blocks: pageWithRenderBox.blocks.map((block) => ({
+        ...block,
+        renderBbox: undefined
+      }))
+    };
+
+    const withRenderBox = applyTranslationBatchToPages([pageWithRenderBox], raw.items);
+    const withoutRenderBox = applyTranslationBatchToPages([pageWithoutRenderBox], raw.items);
+    expect(withRenderBox[0].blocks[0].fontSizePx).toBeGreaterThan(withoutRenderBox[0].blocks[0].fontSizePx);
+    expect(withRenderBox[0].blocks[0].lineHeight).toBe(1.18);
+  });
+
   it("applies translations returned with short request ids once normalized to real block ids", () => {
     const raw: RawGemmaTranslationBatch = {
       items: [

@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { BBox, InpaintSettings, JobState, MangaPage, MangaProject, TranslationBlock } from "../../shared/types";
-import { clampBbox, enforceRenderDirection, shouldConfirmRestart } from "../../shared/geometry";
+import { applyEditableBlockBbox, clampBbox, enforceRenderDirection, offsetBlockBboxes, resolveEditableBlockBbox, shouldConfirmRestart } from "../../shared/geometry";
 import { ConfirmRestartModal } from "./components/ConfirmRestartModal";
 import { EditorPanel } from "./components/EditorPanel";
 import { ImageStage } from "./components/ImageStage";
@@ -256,7 +256,8 @@ export default function App(): React.JSX.Element {
                   ...patch,
                   type: nextType,
                   renderDirection: nextDirection,
-                  bbox: patch.bbox ? clampBbox(patch.bbox) : block.bbox
+                  bbox: patch.bbox ? clampBbox(patch.bbox) : block.bbox,
+                  renderBbox: patch.renderBbox ? clampBbox(patch.renderBbox) : block.renderBbox
                 };
               })
             }
@@ -286,13 +287,8 @@ export default function App(): React.JSX.Element {
       return;
     }
     const copy = {
-      ...selectedBlock,
+      ...offsetBlockBboxes(selectedBlock, 16, 16),
       id: `${selectedBlock.id}-copy-${Date.now()}`,
-      bbox: clampBbox({
-        ...selectedBlock.bbox,
-        x: selectedBlock.bbox.x + 16,
-        y: selectedBlock.bbox.y + 16
-      })
     };
     setPages((current) =>
       current.map((page) =>
@@ -314,12 +310,13 @@ export default function App(): React.JSX.Element {
     event.preventDefault();
     event.stopPropagation();
     setSelectedBlockId(block.id);
+    const target = resolveEditableBlockBbox(block);
     dragRef.current = {
       mode,
       blockId: block.id,
       startX: event.clientX,
       startY: event.clientY,
-      startBbox: block.bbox
+      startBbox: target.bbox
     };
     stageRef.current.setPointerCapture(event.pointerId);
   };
@@ -353,7 +350,7 @@ export default function App(): React.JSX.Element {
           ? candidate
           : {
               ...candidate,
-              blocks: candidate.blocks.map((block) => (block.id === drag.blockId ? { ...block, bbox: clampBbox(next) } : block))
+              blocks: candidate.blocks.map((block) => (block.id === drag.blockId ? applyEditableBlockBbox(block, next) : block))
             }
       )
     );

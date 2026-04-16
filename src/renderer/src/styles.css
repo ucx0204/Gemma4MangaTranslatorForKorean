@@ -276,7 +276,7 @@ button:hover:not(:disabled) {
   overflow: hidden;
   border: 1px solid rgba(50, 50, 50, 0.32);
   border-radius: 4px;
-  padding: 8px;
+  padding: 0;
   font-weight: 700;
   white-space: pre-wrap;
   cursor: move;
@@ -285,6 +285,11 @@ button:hover:not(:disabled) {
 
 .overlay-block.selected {
   outline: 2px solid #6aa9ff;
+  outline-offset: 2px;
+}
+
+.overlay-block.overflowing {
+  outline: 2px dashed #ff9b5d;
   outline-offset: 2px;
 }
 

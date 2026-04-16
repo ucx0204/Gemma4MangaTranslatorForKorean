@@ -77,7 +77,7 @@ export class GlmOcrManager {
       command: commandSpec.command,
       args: commandSpec.args,
       pageCount: pages.length,
-      bboxScale: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel"),
+      bboxScale: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "auto"),
       bboxFormat: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy")
     });
 
@@ -158,7 +158,7 @@ export class GlmOcrManager {
         MANGA_TRANSLATOR_GLMOCR_CONNECT_TIMEOUT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_CONNECT_TIMEOUT", "180"),
         MANGA_TRANSLATOR_GLMOCR_REQUEST_TIMEOUT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_REQUEST_TIMEOUT", "300"),
         MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS: readStringEnv("MANGA_TRANSLATOR_GLMOCR_MAX_WORKERS", "4"),
-        MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "pixel"),
+        MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE", "auto"),
         MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT: readStringEnv("MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT", "xyxy")
       },
       usesManagedRuntime: true

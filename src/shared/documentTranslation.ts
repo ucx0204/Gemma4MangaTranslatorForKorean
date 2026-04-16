@@ -1,4 +1,13 @@
-import { clamp, enforceRenderDirection, estimateFontSizePx, normalizeBlockType, normalizeColor, normalizeDirection, normalizeTextAlign } from "./geometry";
+import {
+  clamp,
+  defaultLineHeightForRenderDirection,
+  enforceRenderDirection,
+  estimateBlockFontSizePx,
+  normalizeBlockType,
+  normalizeColor,
+  normalizeDirection,
+  normalizeTextAlign
+} from "./geometry";
 import type {
   DocumentBatchLimits,
   DocumentTranslationBatch,
@@ -179,11 +188,15 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
         sourceDirection,
         renderDirection,
         fontSizePx: clamp(
-          fontSizePx || estimateFontSizePx(translatedText || block.sourceText, block.bbox, { width: page.width, height: page.height }),
+          fontSizePx ||
+            estimateBlockFontSizePx(translatedText || block.sourceText, block, {
+              width: page.width,
+              height: page.height
+            }),
           10,
           72
         ),
-        lineHeight: clamp(lineHeight || block.lineHeight || 1.2, 1, 1.8),
+        lineHeight: clamp(lineHeight || defaultLineHeightForRenderDirection(renderDirection), 1, 1.8),
         textAlign: normalizeTextAlign(item.textAlign ?? item.text_align ?? block.textAlign),
         textColor: normalizeColor(item.textColor ?? item.text_color ?? block.textColor, DEFAULT_TEXT_COLOR),
         backgroundColor: normalizeColor(item.backgroundColor ?? item.background_color ?? block.backgroundColor, DEFAULT_BACKGROUND_COLOR),

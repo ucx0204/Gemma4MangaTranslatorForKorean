@@ -43,6 +43,54 @@ export function resolveBlockRenderBbox(block: Pick<TranslationBlock, "bbox" | "r
   return clampBbox(block.bbox);
 }
 
+export function defaultLineHeightForRenderDirection(direction: TextDirection): number {
+  return direction === "vertical" ? 1.05 : 1.18;
+}
+
+export function estimateBlockFontSizePx(
+  text: string,
+  block: Pick<TranslationBlock, "bbox" | "renderBbox" | "type">,
+  pageSize: { width: number; height: number }
+): number {
+  return estimateFontSizePx(text, resolveBlockRenderBbox(block), pageSize);
+}
+
+export function resolveEditableBlockBbox(block: Pick<TranslationBlock, "bbox" | "renderBbox">): { key: "bbox" | "renderBbox"; bbox: BBox } {
+  if (block.renderBbox) {
+    return {
+      key: "renderBbox",
+      bbox: clampBbox(block.renderBbox)
+    };
+  }
+
+  return {
+    key: "bbox",
+    bbox: clampBbox(block.bbox)
+  };
+}
+
+export function applyEditableBlockBbox(block: TranslationBlock, nextBbox: BBox): TranslationBlock {
+  const target = resolveEditableBlockBbox(block);
+  const clamped = clampBbox(nextBbox);
+  return target.key === "renderBbox"
+    ? {
+        ...block,
+        renderBbox: clamped
+      }
+    : {
+        ...block,
+        bbox: clamped
+      };
+}
+
+export function offsetBlockBboxes(block: TranslationBlock, dx: number, dy: number): TranslationBlock {
+  return {
+    ...block,
+    bbox: offsetBbox(block.bbox, dx, dy),
+    renderBbox: block.renderBbox ? offsetBbox(block.renderBbox, dx, dy) : undefined
+  };
+}
+
 export function shouldRunInpaint(settings: { enabled: boolean }): boolean {
   return settings.enabled;
 }
@@ -127,27 +175,37 @@ function normalizeGemmaBlock(raw: RawGemmaBlock, index: number, pageSize: { widt
   const rawRenderDirection = normalizeDirection(raw.renderDirection ?? raw.render_direction, sourceDirection);
   const renderDirection = enforceRenderDirection(type, rawRenderDirection);
   const normalizedBbox = clampBbox(bbox);
+  const normalizedRenderBbox = renderBbox ? clampBbox(renderBbox) : undefined;
   const fontSize = Number(raw.fontSizePx ?? raw.font_size_px);
   const lineHeight = Number(raw.lineHeight ?? raw.line_height);
   const opacity = Number(raw.opacity);
   const textAlign = normalizeTextAlign(raw.textAlign ?? raw.text_align);
 
   return {
-    id: String(raw.id ?? `block-${Date.now()}-${index}`),
-    type,
-    bbox: normalizedBbox,
-    renderBbox: renderBbox ? clampBbox(renderBbox) : undefined,
-    sourceText,
-    translatedText,
-    confidence: clamp(Number(raw.confidence ?? 0.6), 0, 1),
-    sourceDirection,
-    renderDirection,
-    fontSizePx: clamp(fontSize || estimateFontSizePx(translatedText || sourceText, normalizedBbox, pageSize), 10, 72),
-    lineHeight: clamp(lineHeight || 1.2, 1, 1.8),
-    textAlign,
-    textColor: normalizeColor(raw.textColor ?? raw.text_color, DEFAULT_TEXT_COLOR),
-    backgroundColor: normalizeColor(raw.backgroundColor ?? raw.background_color, DEFAULT_BACKGROUND_COLOR),
-    opacity: clamp(Number.isFinite(opacity) ? opacity : 0.78, 0.1, 1)
+      id: String(raw.id ?? `block-${Date.now()}-${index}`),
+      type,
+      bbox: normalizedBbox,
+      renderBbox: normalizedRenderBbox,
+      sourceText,
+      translatedText,
+      confidence: clamp(Number(raw.confidence ?? 0.6), 0, 1),
+      sourceDirection,
+      renderDirection,
+      fontSizePx: clamp(
+        fontSize ||
+          estimateBlockFontSizePx(
+            translatedText || sourceText,
+            { bbox: normalizedBbox, renderBbox: normalizedRenderBbox, type },
+            pageSize
+          ),
+        10,
+        72
+      ),
+      lineHeight: clamp(lineHeight || defaultLineHeightForRenderDirection(renderDirection), 1, 1.8),
+      textAlign,
+      textColor: normalizeColor(raw.textColor ?? raw.text_color, DEFAULT_TEXT_COLOR),
+      backgroundColor: normalizeColor(raw.backgroundColor ?? raw.background_color, DEFAULT_BACKGROUND_COLOR),
+      opacity: clamp(Number.isFinite(opacity) ? opacity : 0.78, 0.1, 1)
   };
 }
 
@@ -172,4 +230,12 @@ function readBbox(input: RawGemmaBlock["bbox"]): BBox | null {
   }
 
   return null;
+}
+
+function offsetBbox(bbox: BBox, dx: number, dy: number): BBox {
+  return clampBbox({
+    ...bbox,
+    x: bbox.x + dx,
+    y: bbox.y + dy
+  });
 }

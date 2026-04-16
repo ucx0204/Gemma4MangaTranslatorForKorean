@@ -35,6 +35,29 @@ describe("glmocr_worker bbox coercion", () => {
     expect(JSON.parse(output)).toEqual({ x: 10, y: 40, w: 100, h: 400 });
   });
 
+  it("infers normalized_1000 in auto mode when page extents stay near the 1000 ceiling", () => {
+    const script = [
+      "import importlib.util, pathlib, json",
+      "path = pathlib.Path(r'scripts/glmocr_worker.py')",
+      "spec = importlib.util.spec_from_file_location('glmocr_worker', path)",
+      "module = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(module)",
+      "regions = [{'bbox':[120,140,920,980]}, {'bbox':[500,520,880,940]}]",
+      "print(json.dumps(module.resolve_scale_mode(regions, 1400, 2000, 'xyxy')))"
+    ].join(";");
+    const output = execFileSync(PYTHON, ["-c", script], {
+      encoding: "utf8",
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        MANGA_TRANSLATOR_GLMOCR_BBOX_SCALE: "auto",
+        MANGA_TRANSLATOR_GLMOCR_BBOX_FORMAT: "xyxy"
+      }
+    }).trim();
+
+    expect(JSON.parse(output)).toEqual(["normalized_1000", 920, 980]);
+  });
+
   it("supports xywh mode when configured", () => {
     const script = [
       "import importlib.util, pathlib, json",
