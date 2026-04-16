@@ -62,11 +62,25 @@ $env:MANGA_TRANSLATOR_FIT_TARGET_MB="8192"
 $env:MANGA_TRANSLATOR_GPU_LAYERS="all"
 $env:MANGA_TRANSLATOR_N_CPU_MOE="9"
 $env:MANGA_TRANSLATOR_CTX="32768"
-$env:MANGA_TRANSLATOR_MAX_TOKENS="12288"
+$env:MANGA_TRANSLATOR_MAX_TOKENS_BATCH="2048"
+$env:MANGA_TRANSLATOR_MAX_TOKENS_RETRY_GROUP="768"
+$env:MANGA_TRANSLATOR_MAX_TOKENS_SINGLE="256"
+$env:MANGA_TRANSLATOR_REPAIR_MAX_TOKENS="384"
+$env:MANGA_TRANSLATOR_PROMPT_TOKEN_MARGIN="2048"
+$env:MANGA_TRANSLATOR_PROMPT_TOKEN_TARGET_RATIO="0.78"
+$env:MANGA_TRANSLATOR_REPEAT_LAST_N="256"
+$env:MANGA_TRANSLATOR_REPEAT_PENALTY="1.12"
+$env:MANGA_TRANSLATOR_PRESENCE_PENALTY="0.02"
+$env:MANGA_TRANSLATOR_FREQUENCY_PENALTY="0.12"
+$env:MANGA_TRANSLATOR_DRY_MULTIPLIER="1.0"
+$env:MANGA_TRANSLATOR_DRY_ALLOWED_LENGTH="2"
+$env:MANGA_TRANSLATOR_TOP_P="0.9"
+$env:MANGA_TRANSLATOR_STOP_SEQUENCES="<end_of_turn>|<start_of_turn>user|<start_of_turn>model"
 ```
 
 If `C:\Users\sam40\Desktop\llama-cuda-b8766\llama-server.exe` exists, it is preferred by default so CUDA is used instead of the Winget Vulkan build.
 The launch defaults follow the twitch-backend shape but push slightly more work to GPU and leave more context headroom: `-ngl all --n-cpu-moe 9 --fit on --fit-target 8192 -c 32768 -b 128 -ub 128 -np 1 --no-cache-prompt --cache-ram 0`.
+The managed `llama-server` launch also enables repeat-control and DRY sampling by default so Gemma is less likely to spiral into `나나나나...` style malformed JSON.
 
 ## GLM-OCR
 
@@ -112,12 +126,17 @@ Instead it receives OCR text batches for the current document, with page order a
 Useful environment overrides:
 
 ```powershell
-$env:MANGA_TRANSLATOR_DOC_CHAR_LIMIT="22000"
-$env:MANGA_TRANSLATOR_GLOSSARY_LIMIT="32"
+$env:MANGA_TRANSLATOR_DOC_MAX_BLOCKS="24"
+$env:MANGA_TRANSLATOR_DOC_MAX_PAGES="6"
+$env:MANGA_TRANSLATOR_DOC_CHAR_LIMIT="9000"
+$env:MANGA_TRANSLATOR_GLOSSARY_LIMIT="8"
 ```
 
-Large documents are chunked by page order, and previous translated terms are fed back as a glossary to keep naming and tone consistent.
-If Gemma still throws a context overflow, the app automatically retries by splitting the current OCR block batch in half, and keeps halving recursively until it fits.
+Large documents are chunked by page order, block count, and character budget before Gemma sees them.
+When `llama-server` exposes a tokenize endpoint, the app also estimates prompt tokens from the compact payload before sending each batch and splits oversized batches early.
+If Gemma still throws a context overflow or returns runaway malformed JSON, the app falls back to smaller batches automatically.
+Missing block retries are grouped into small batches first, then reduced to single-block retries only when needed.
+Gemma prompts are sent as a single `user` message instead of `system + user`, which matches Gemma's instruction-format guidance more closely and improves structured output stability.
 
 ## Inpainting Without ComfyUI
 

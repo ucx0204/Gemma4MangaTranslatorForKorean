@@ -77,13 +77,79 @@ export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, cand
   });
 }
 
+export function getOcrCandidateRejectionReason(
+  candidate: Pick<OcrBlockCandidate, "sourceText" | "ocrRawText" | "confidence" | "sourceSpanIds" | "typeHint">
+): string | null {
+  const compact = normalizeOcrText(candidate.sourceText).replace(/\s+/g, "");
+  if (!compact) {
+    return "empty";
+  }
+
+  if (compact.includes("\uFFFD")) {
+    return "replacement-char";
+  }
+
+  if (/^[!！?？…・。、「」『』（）()]+$/u.test(compact)) {
+    return "punctuation-only";
+  }
+
+  if (/^[\d０-９]+$/u.test(compact)) {
+    return "numeric-only";
+  }
+
+  if (hasChapterMetadata(compact)) {
+    return "chapter-metadata";
+  }
+
+  if (hasMixedFrontmatterNoise(compact)) {
+    return "mixed-frontmatter";
+  }
+
+  if (countInlineRubyArtifacts(compact) >= 3) {
+    return "inline-ruby-noise";
+  }
+
+  if (/(.)\1{10,}/u.test(compact) && candidate.confidence < 0.85) {
+    return "repeated-chars-low-confidence";
+  }
+
+  const signalCount = [...compact].filter((char) => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Latin}\p{Number}\p{Script=Hangul}]/u.test(char)).length;
+  const signalRatio = signalCount / Math.max(1, compact.length);
+  if (compact.length >= 12 && signalRatio < 0.45 && candidate.confidence < 0.65) {
+    return "low-signal-low-confidence";
+  }
+
+  if (candidate.sourceSpanIds.length >= 8 && compact.length >= 120 && candidate.confidence < 0.75) {
+    return "overmerged-low-confidence";
+  }
+
+  if (candidate.sourceSpanIds.length >= 10 && candidate.confidence < 0.65) {
+    return "too-many-spans-low-confidence";
+  }
+
+  if (candidate.typeHint === "speech" && compact.length >= 140 && candidate.confidence < 0.9) {
+    return "speech-overlong-low-confidence";
+  }
+
+  if (compact.length >= 180 && candidate.confidence < 0.8) {
+    return "overlong-low-confidence";
+  }
+
+  const raw = candidate.ocrRawText?.replace(/\s+/g, "") ?? "";
+  if (raw && raw.length >= compact.length * 2.6 && candidate.confidence < 0.7) {
+    return "raw-noise-overweight";
+  }
+
+  return null;
+}
+
 export function normalizeOcrText(text: string): string {
   const cleaned = text.replace(/\r/g, "").replace(/\u200b/g, "").trim();
   if (!cleaned) {
     return "";
   }
 
-  const compact = cleaned.replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
+  const compact = collapseInlineRubyNoise(cleaned.replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim());
   if (isMostlyJapanese(compact)) {
     return compact.replace(/[ \t\n\u3000]+/g, "");
   }
@@ -428,6 +494,29 @@ function isMostlyJapanese(text: string): boolean {
   }
   const japanese = chars.filter((char) => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fffー]/u.test(char)).length;
   return japanese / chars.length >= 0.6;
+}
+
+function collapseInlineRubyNoise(text: string): string {
+  return text
+    .replace(/([ぁ-ゖァ-ヺー]{2,8})[【\[]([\u3400-\u4dbf\u4e00-\u9fff]{1,8})[】\]]/gu, "$2")
+    .replace(/([ぁ-ゖァ-ヺー]{2,8})([\u3400-\u4dbf\u4e00-\u9fff]{1,4})(?=[^\u3400-\u4dbf\u4e00-\u9fff]|$)/gu, "$2")
+    .replace(/([\u3400-\u4dbf\u4e00-\u9fff]{1,4})[【\[]([ぁ-ゖァ-ヺー]{2,8})[】\]]/gu, "$1");
+}
+
+function countInlineRubyArtifacts(text: string): number {
+  return (text.match(/[ぁ-ゖァ-ヺー]{2,8}[\u3400-\u4dbf\u4e00-\u9fff]{1,4}/gu) ?? []).length;
+}
+
+function hasChapterMetadata(text: string): boolean {
+  return /(原作|作画|キャラクタ(?:ー|ー)?デザイ|第\s*\d+\s*話|月号|villainousaristocrat|thatisneededfor)/iu.test(
+    text.replace(/\s+/g, "")
+  );
+}
+
+function hasMixedFrontmatterNoise(text: string): boolean {
+  const latinCount = [...text].filter((char) => /[A-Za-z]/.test(char)).length;
+  const latinRatio = latinCount / Math.max(1, text.length);
+  return latinRatio >= 0.16 && text.length >= 40 && /[#◆]/u.test(text);
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

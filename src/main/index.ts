@@ -8,7 +8,7 @@ import { GlmOcrManager } from "./glmOcrManager";
 import { LlamaManager } from "./llamaManager";
 import { InpaintManager } from "./inpaintManager";
 import { getLogPath, logError, logInfo, logWarn, writeLog } from "./logger";
-import { buildOcrBlockCandidates, ocrCandidatesToTranslationBlocks } from "../shared/ocr";
+import { buildOcrBlockCandidates, getOcrCandidateRejectionReason, ocrCandidatesToTranslationBlocks } from "../shared/ocr";
 import type { JobEvent, MangaPage, MangaProject, OcrBlockCandidate, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
@@ -265,29 +265,56 @@ function registerIpc(): void {
         logWarn("GLM-OCR warning", { jobId: id, warning });
       }
 
-      const candidateMap = new Map<string, OcrBlockCandidate[]>();
       const ocrPages: MangaPage[] = [];
       for (const page of request.pages) {
         abortController.signal.throwIfAborted();
         const spans = ocrResult.pages.find((candidate) => candidate.id === page.id)?.spans ?? [];
         logInfo("GLM-OCR spans ready", { jobId: id, pageId: page.id, spanCount: spans.length });
         const candidates = buildOcrBlockCandidates(page.id, spans, { width: page.width, height: page.height });
-        candidateMap.set(page.id, candidates);
+        const acceptedCandidates: OcrBlockCandidate[] = [];
+        let rejectedCount = 0;
+        for (const candidate of candidates) {
+          const rejectionReason = getOcrCandidateRejectionReason(candidate);
+          if (rejectionReason) {
+            rejectedCount += 1;
+            warnings.push(`[ocr_rejected] ${page.name} ${candidate.blockId} (${candidate.sourceText.slice(0, 40)}) 는 ${rejectionReason} 로 제외했습니다.`);
+            logWarn("Rejected OCR block candidate", {
+              jobId: id,
+              pageId: page.id,
+              pageName: page.name,
+              blockId: candidate.blockId,
+              reason: rejectionReason,
+              confidence: Number(candidate.confidence.toFixed(3)),
+              spanCount: candidate.sourceSpanIds.length,
+              sourcePreview: summarizePreview(candidate.sourceText),
+              rawPreview: summarizePreview(candidate.ocrRawText ?? "")
+            });
+            continue;
+          }
+          acceptedCandidates.push(candidate);
+        }
+
         logInfo("OCR block candidates built", {
           jobId: id,
           pageId: page.id,
-          candidateCount: candidates.length,
-          blockIds: candidates.map((candidate) => candidate.blockId)
+          candidateCount: acceptedCandidates.length,
+          rejectedCount,
+          blocks: acceptedCandidates.slice(0, 8).map((candidate) => ({
+            blockId: candidate.blockId,
+            confidence: Number(candidate.confidence.toFixed(3)),
+            spanCount: candidate.sourceSpanIds.length,
+            sourcePreview: summarizePreview(candidate.sourceText)
+          }))
         });
         emit({
           id,
           kind: "gemma-analysis",
           status: "running",
           progressText: `${page.name} OCR 정리 중`,
-          detail: `span ${spans.length}개, block ${candidates.length}개`
+          detail: `span ${spans.length}개, block ${acceptedCandidates.length}개, 제외 ${rejectedCount}개`
         });
 
-        if (candidates.length === 0) {
+        if (acceptedCandidates.length === 0) {
           const warning = `${page.name}: GLM-OCR 결과에서 유효한 텍스트 블록을 만들지 못했습니다.`;
           warnings.push(warning);
           logWarn("No OCR block candidates generated", { jobId: id, pageId: page.id });
@@ -295,7 +322,7 @@ function registerIpc(): void {
 
         ocrPages.push({
           ...page,
-          blocks: ocrCandidatesToTranslationBlocks(page, candidates),
+          blocks: ocrCandidatesToTranslationBlocks(page, acceptedCandidates),
           cleanLayerDataUrl: null,
           inpaintApplied: false
         });
@@ -425,6 +452,14 @@ function stripProjectForSave(project: MangaProject): MangaProject {
       cleanLayerDataUrl: page.cleanLayerDataUrl ?? null
     }))
   };
+}
+
+function summarizePreview(text: string, maxLength = 80): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, maxLength - 1)}…`;
 }
 
 async function queryVram(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number } | null> {

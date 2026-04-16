@@ -43,7 +43,7 @@ export function parseJsonPayload(rawText: string): unknown {
 
 function repairCommonJsonBreakage(input: string): string {
   const knownKeys =
-    "(?:imageWidth|imageHeight|image_width|image_height|sourceLanguage|targetLanguage|crops|cropId|items|targetId|blockId|blocks|id|type|bbox|x|y|w|h|sourceText|source_text|translatedText|translated_text|translation|readingText|reading_text|confidence|sourceDirection|source_direction|renderDirection|render_direction|fontSizePx|font_size_px|lineHeight|line_height|textAlign|text_align|textColor|text_color|backgroundColor|background_color|opacity)";
+    "(?:imageWidth|imageHeight|image_width|image_height|sourceLanguage|targetLanguage|crops|cropId|items|targetId|blockId|blocks|id|type|k|bbox|x|y|w|h|sourceText|source_text|translatedText|translated_text|translated|translation|readingText|reading_text|confidence|sourceDirection|source_direction|renderDirection|render_direction|dir|rd|fontSizePx|font_size_px|lineHeight|line_height|textAlign|text_align|textColor|text_color|backgroundColor|background_color|opacity)";
 
   return input
     .replace(/}\s*{/g, "},{")

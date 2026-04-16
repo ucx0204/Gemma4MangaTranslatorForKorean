@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOcrBlockCandidates, normalizeOcrText, ocrCandidatesToTranslationBlocks } from "../src/shared/ocr";
+import { buildOcrBlockCandidates, getOcrCandidateRejectionReason, normalizeOcrText, ocrCandidatesToTranslationBlocks } from "../src/shared/ocr";
 import type { AnalysisRequestPage, OcrSpan } from "../src/shared/types";
 
 describe("OCR normalization and block building", () => {
@@ -146,5 +146,43 @@ describe("OCR normalization and block building", () => {
   it("normalizes Japanese OCR text without injecting spaces", () => {
     expect(normalizeOcrText(" 残念 だった な ")).toBe("残念だったな");
     expect(normalizeOcrText("hello   world")).toBe("hello world");
+    expect(normalizeOcrText("みかた味方しなければ")).toBe("味方しなければ");
+    expect(normalizeOcrText("せんどう【扇動】のスキル")).toBe("扇動のスキル");
+  });
+
+  it("flags clearly overmerged low-confidence OCR candidates for rejection", () => {
+    expect(
+      getOcrCandidateRejectionReason({
+        sourceText:
+          "アーク派閥に味方しなければ生きていられたのに力が強いこのままじゃせっかくだ楽しませてもらうぜクリスティナ様まだ終わっていない何度でも立ち上がるしかないここで倒れるわけにはいかない",
+        ocrRawText:
+          "アーク派閥に味方しなければ | 生きていられたのに | 力が強い！このままじゃ…!! | せっかくだ楽しませてもらうぜクリスティナ様 | まだ終わっていない | 何度でも立ち上がるしかない | ここで倒れるわけにはいかない",
+        confidence: 0.62,
+        sourceSpanIds: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+        typeHint: "speech"
+      })
+    ).toBeTruthy();
+  });
+
+  it("rejects obvious chapter metadata and numeric noise", () => {
+    expect(
+      getOcrCandidateRejectionReason({
+        sourceText: "#悪役貴族 That is needed for a villainous aristocrat. ◆第23話◆孤独少女 原作：まさこりん 作画：夏野うみ",
+        ocrRawText: "#悪役貴族 That is needed for a villainous aristocrat.",
+        confidence: 0.9,
+        sourceSpanIds: ["a", "b", "c", "d", "e", "f"],
+        typeHint: "speech"
+      })
+    ).toBe("chapter-metadata");
+
+    expect(
+      getOcrCandidateRejectionReason({
+        sourceText: "2",
+        ocrRawText: "2",
+        confidence: 0.9,
+        sourceSpanIds: ["a"],
+        typeHint: "speech"
+      })
+    ).toBe("numeric-only");
   });
 });

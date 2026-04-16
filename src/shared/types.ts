@@ -123,6 +123,7 @@ export type OcrBlockCandidate = {
 
 export type DocumentTranslationBatchItem = {
   blockId: string;
+  modelId?: string;
   pageId: string;
   pageName: string;
   sourceText: string;
@@ -130,6 +131,13 @@ export type DocumentTranslationBatchItem = {
   sourceDirection: TextDirection;
   readingText?: string;
   ocrRawText?: string;
+  ocrConfidence?: number;
+};
+
+export type DocumentBatchLimits = {
+  maxBlocks: number;
+  maxPages: number;
+  maxChars: number;
 };
 
 export type DocumentTranslationBatch = {
@@ -141,6 +149,8 @@ export type DocumentTranslationBatch = {
     translatedText: string;
   }>;
 };
+
+export type GemmaRequestMode = "initial" | "group" | "single" | "repair";
 
 export type DetectedTextTarget = {
   id: string;
@@ -269,15 +279,21 @@ export type RawTargetBatchAnalysis = Partial<{
 
 export type RawGemmaTranslationItem = Partial<{
   blockId: string;
+  id: string;
   type: string;
   translatedText: string;
   translated_text: string;
   translation: string;
+  translated: string;
+  t: string;
   confidence: number;
   sourceDirection: string;
   source_direction: string;
+  d: string;
   renderDirection: string;
   render_direction: string;
+  dir: string;
+  rd: string;
   fontSizePx: number;
   font_size_px: number;
   lineHeight: number;

@@ -1,12 +1,21 @@
 import { clamp, enforceRenderDirection, estimateFontSizePx, normalizeBlockType, normalizeColor, normalizeDirection, normalizeTextAlign } from "./geometry";
-import type { DocumentTranslationBatch, DocumentTranslationBatchItem, MangaPage, RawGemmaTranslationBatch, TranslationBlock } from "./types";
+import type {
+  DocumentBatchLimits,
+  DocumentTranslationBatch,
+  DocumentTranslationBatchItem,
+  GemmaRequestMode,
+  MangaPage,
+  RawGemmaTranslationItem,
+  RawGemmaTranslationBatch,
+  TranslationBlock
+} from "./types";
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
 
 export function buildDocumentTranslationBatches(
   pages: MangaPage[],
-  chunkCharLimit: number,
+  limits: DocumentBatchLimits,
   glossary: Array<{ sourceText: string; translatedText: string }> = []
 ): DocumentTranslationBatch[] {
   const pageSections = pages
@@ -21,26 +30,15 @@ export function buildDocumentTranslationBatches(
   let current: DocumentTranslationBatchItem[] = [];
 
   for (const section of pageSections) {
-    const sectionCost = estimateBatchCost(section.items);
-    if (current.length > 0 && estimateBatchCost(current) + sectionCost > chunkCharLimit) {
-      batches.push({
-        chunkIndex: batches.length,
-        totalChunks: 0,
-        items: current,
-        glossary: glossary.slice(0, 32)
-      });
+    if (current.length > 0 && exceedsLimits([...current, ...section.items], limits)) {
+      batches.push(createBatch(batches.length, current, glossary));
       current = [];
     }
 
-    if (sectionCost > chunkCharLimit && current.length === 0) {
-      const subChunks = chunkItems(section.items, chunkCharLimit);
-      for (const items of subChunks) {
-        batches.push({
-          chunkIndex: batches.length,
-          totalChunks: 0,
-          items,
-          glossary: glossary.slice(0, 32)
-        });
+    if (exceedsLimits(section.items, limits)) {
+      const chunks = chunkTranslationItems(section.items, { ...limits, maxPages: 1 });
+      for (const chunk of chunks) {
+        batches.push(createBatch(batches.length, chunk, glossary));
       }
       continue;
     }
@@ -49,12 +47,7 @@ export function buildDocumentTranslationBatches(
   }
 
   if (current.length > 0) {
-    batches.push({
-      chunkIndex: batches.length,
-      totalChunks: 0,
-      items: current,
-      glossary: glossary.slice(0, 32)
-    });
+    batches.push(createBatch(batches.length, current, glossary));
   }
 
   return batches.map((batch, index, all) => ({
@@ -64,7 +57,53 @@ export function buildDocumentTranslationBatches(
   }));
 }
 
-export function buildTranslationGlossary(pages: MangaPage[], limit = 32): Array<{ sourceText: string; translatedText: string }> {
+export function chunkTranslationItems(items: DocumentTranslationBatchItem[], limits: DocumentBatchLimits): DocumentTranslationBatchItem[][] {
+  const chunks: DocumentTranslationBatchItem[][] = [];
+  let current: DocumentTranslationBatchItem[] = [];
+
+  for (const item of items) {
+    const proposed = [...current, item];
+    if (current.length > 0 && exceedsLimits(proposed, limits)) {
+      chunks.push(current);
+      current = [];
+    }
+    current.push(item);
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+export function buildCompactGemmaPayload(
+  batch: DocumentTranslationBatch,
+  mode: GemmaRequestMode
+): string {
+  const minimal = mode === "single";
+  const payload = {
+    ...(minimal ? {} : { chunk: [batch.chunkIndex, batch.totalChunks] }),
+    ...(minimal || batch.glossary.length === 0
+      ? {}
+      : {
+          gl: batch.glossary.map((entry) => [entry.sourceText, entry.translatedText])
+        }),
+    items: batch.items.map((item) => toCompactItem(item, minimal))
+  };
+
+  return JSON.stringify(payload);
+}
+
+export function estimateDocumentSourceChars(items: DocumentTranslationBatchItem[]): number {
+  return items.reduce((sum, item) => {
+    const readingHint = selectReadingHint(item);
+    const rawHint = selectRawHint(item);
+    return sum + item.sourceText.length + readingHint.length + rawHint.length;
+  }, 0);
+}
+
+export function buildTranslationGlossary(pages: MangaPage[], limit = 8): Array<{ sourceText: string; translatedText: string }> {
   const bySource = new Map<string, string>();
   for (const page of pages) {
     for (const block of page.blocks) {
@@ -85,7 +124,8 @@ export function buildTranslationGlossary(pages: MangaPage[], limit = 32): Array<
 }
 
 export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemmaTranslationBatch["items"]): MangaPage[] {
-  const byId = new Map((items ?? []).map((item) => [String(item?.blockId ?? "").trim(), item]));
+  const normalized = normalizeGemmaTranslationItems(items ?? []);
+  const byId = new Map(normalized.map((item) => [String(item.blockId ?? "").trim(), item]));
   return pages.map((page) => ({
     ...page,
     blocks: page.blocks.map((block) => {
@@ -98,9 +138,11 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
       const sourceDirection = normalizeDirection(item.sourceDirection ?? item.source_direction ?? block.sourceDirection, block.sourceDirection);
       const renderDirection = enforceRenderDirection(
         type,
-        normalizeDirection(item.renderDirection ?? item.render_direction ?? sourceDirection, sourceDirection)
+        normalizeDirection(item.renderDirection ?? item.render_direction ?? item.dir ?? item.rd ?? sourceDirection, sourceDirection)
       );
-      const translatedText = String(item.translatedText ?? item.translated_text ?? item.translation ?? "").trim();
+      const translatedText = String(
+        item.translatedText ?? item.translated_text ?? item.translation ?? item.translated ?? inferCompactTranslation(item) ?? ""
+      ).trim();
       const fontSizePx = Number(item.fontSizePx ?? item.font_size_px);
       const lineHeight = Number(item.lineHeight ?? item.line_height);
       const opacity = Number(item.opacity);
@@ -128,6 +170,121 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
   }));
 }
 
+export function normalizeGemmaTranslationItems(items: unknown[]): RawGemmaTranslationItem[] {
+  const normalized: RawGemmaTranslationItem[] = [];
+
+  for (const entry of items) {
+    const item = normalizeGemmaTranslationItem(entry);
+    if (!item?.blockId) {
+      continue;
+    }
+    normalized.push(item);
+  }
+
+  return normalized;
+}
+
+export function getSuspiciousTranslationReason(sourceText: string, translatedText: string): string | null {
+  const compactSource = sourceText.replace(/\s+/g, "");
+  const compactTranslated = translatedText.replace(/\s+/g, "");
+  if (!compactTranslated) {
+    return "empty";
+  }
+
+  if (/[{}\[\]"]/.test(compactTranslated) && /items|blockId|translated/i.test(compactTranslated)) {
+    return "schema-leak";
+  }
+
+  if (/(.)\1{8,}/u.test(compactTranslated) && compactTranslated.length >= Math.max(16, compactSource.length * 3)) {
+    return "repeated-char-run";
+  }
+
+  if (/(..)\1{6,}/u.test(compactTranslated) && compactTranslated.length >= Math.max(20, compactSource.length * 3)) {
+    return "repeated-chunk-run";
+  }
+
+  const uniqueChars = new Set([...compactTranslated]).size;
+  const diversity = uniqueChars / Math.max(1, compactTranslated.length);
+  if (compactTranslated.length >= Math.max(24, compactSource.length * 4) && diversity < 0.28) {
+    return "overlong-low-diversity";
+  }
+
+  if (/block-\d{3}|page-\d+/i.test(compactTranslated)) {
+    return "id-leak";
+  }
+
+  return null;
+}
+
+function createBatch(
+  index: number,
+  items: DocumentTranslationBatchItem[],
+  glossary: Array<{ sourceText: string; translatedText: string }>
+): DocumentTranslationBatch {
+  return {
+    chunkIndex: index,
+    totalChunks: 0,
+    items,
+    glossary: glossary.slice()
+  };
+}
+
+function exceedsLimits(items: DocumentTranslationBatchItem[], limits: DocumentBatchLimits): boolean {
+  if (items.length === 0) {
+    return false;
+  }
+
+  return (
+    items.length > limits.maxBlocks ||
+    countDistinctPages(items) > limits.maxPages ||
+    estimateBatchCost(items) > limits.maxChars
+  );
+}
+
+function countDistinctPages(items: DocumentTranslationBatchItem[]): number {
+  return new Set(items.map((item) => item.pageId)).size;
+}
+
+function toCompactItem(
+  item: DocumentTranslationBatchItem,
+  minimal: boolean
+): Record<string, string> {
+  const readingHint = selectReadingHint(item);
+  const rawHint = selectRawHint(item);
+
+  return {
+    id: item.modelId ?? item.blockId,
+    ...(minimal ? {} : { p: item.pageName }),
+    s: item.sourceText,
+    k: item.typeHint,
+    d: item.sourceDirection,
+    ...(readingHint ? { r: readingHint } : {}),
+    ...(rawHint ? { o: rawHint } : {})
+  };
+}
+
+function selectReadingHint(item: DocumentTranslationBatchItem): string {
+  const reading = item.readingText?.trim() ?? "";
+  if (!reading) {
+    return "";
+  }
+  return reading === item.sourceText.trim() ? "" : reading;
+}
+
+function selectRawHint(item: DocumentTranslationBatchItem): string {
+  const raw = item.ocrRawText?.trim() ?? "";
+  if (!raw) {
+    return "";
+  }
+
+  const source = item.sourceText.trim();
+  const reading = item.readingText?.trim() ?? "";
+  if (raw === source || raw === reading || raw === `${reading} | ${source}` || raw === `${source} | ${reading}`) {
+    return "";
+  }
+  return raw;
+}
+
 function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslationBatchItem {
   return {
     blockId: block.id,
@@ -137,30 +294,81 @@ function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslat
     typeHint: block.type,
     sourceDirection: block.sourceDirection,
     readingText: block.readingText,
-    ocrRawText: block.ocrRawText
+    ocrRawText: block.ocrRawText,
+    ocrConfidence: block.ocrConfidence
   };
 }
 
-function chunkItems(items: DocumentTranslationBatchItem[], limit: number): DocumentTranslationBatchItem[][] {
-  const chunks: DocumentTranslationBatchItem[][] = [];
-  let current: DocumentTranslationBatchItem[] = [];
-  for (const item of items) {
-    const nextCost = estimateBatchCost([...current, item]);
-    if (current.length > 0 && nextCost > limit) {
-      chunks.push(current);
-      current = [];
-    }
-    current.push(item);
-  }
-  if (current.length > 0) {
-    chunks.push(current);
-  }
-  return chunks;
+function estimateBatchCost(items: DocumentTranslationBatchItem[]): number {
+  return items.reduce((sum, item) => sum + estimateItemCost(item), 0);
 }
 
-function estimateBatchCost(items: DocumentTranslationBatchItem[]): number {
-  return items.reduce(
-    (sum, item) => sum + item.sourceText.length + (item.readingText?.length ?? 0) + (item.ocrRawText?.length ?? 0) + item.pageName.length + 32,
-    0
-  );
+function estimateItemCost(item: DocumentTranslationBatchItem): number {
+  const readingHint = selectReadingHint(item);
+  const rawHint = selectRawHint(item);
+  return item.sourceText.length + readingHint.length + rawHint.length + item.pageName.length + 24;
+}
+
+function normalizeGemmaTranslationItem(entry: unknown): RawGemmaTranslationItem | null {
+  if (Array.isArray(entry)) {
+    const [blockId, translatedText, type, renderDirection] = entry;
+    const normalizedBlockId = stringOrEmpty(blockId);
+    if (!normalizedBlockId) {
+      return null;
+    }
+    return {
+      blockId: normalizedBlockId,
+      translatedText: stringOrEmpty(translatedText),
+      type: stringOrEmpty(type),
+      renderDirection: stringOrEmpty(renderDirection)
+    };
+  }
+
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const candidate = entry as Record<string, unknown>;
+  const compactTranslation = inferCompactTranslation(candidate);
+  const blockId = stringOrEmpty(candidate.blockId ?? candidate.id);
+  if (!blockId) {
+    return null;
+  }
+
+  return {
+    ...candidate,
+    blockId,
+    translatedText: stringOrEmpty(
+      candidate.translatedText ?? candidate.translated_text ?? candidate.translation ?? candidate.translated ?? compactTranslation
+    ),
+    type: stringOrEmpty(candidate.type ?? candidate.k),
+    sourceDirection: stringOrEmpty(candidate.sourceDirection ?? candidate.source_direction ?? candidate.d),
+    renderDirection: stringOrEmpty(candidate.renderDirection ?? candidate.render_direction ?? candidate.dir ?? candidate.rd)
+  };
+}
+
+function inferCompactTranslation(candidate: Record<string, unknown>): string {
+  const compactT = stringOrEmpty(candidate.t);
+  if (!compactT) {
+    return "";
+  }
+
+  const compactType = stringOrEmpty(candidate.type);
+  if (compactType && compactT === compactType) {
+    return "";
+  }
+
+  if (["speech", "sfx", "sign", "caption", "handwriting", "other"].includes(compactT)) {
+    return "";
+  }
+
+  if (/^[a-z][a-z_-]{1,24}$/i.test(compactT)) {
+    return "";
+  }
+
+  return compactT;
+}
+
+function stringOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
