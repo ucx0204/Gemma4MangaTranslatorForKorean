@@ -138,8 +138,9 @@ The worker can use `diffusers` directly, so it does not need ComfyUI. If `QWEN_I
 
 - Speech bubbles always render Korean horizontally.
 - SFX/sign/caption/handwriting blocks may stay vertical or rotated.
-- Furigana is treated as reading help, not primary source text.
+- Furigana is passed through to Gemma as reading help via `readingText` and `ocrRawText` hints.
 - OCR spans are merged into text-region blocks before translation.
 - Gemma translates OCR text by `blockId`, not by image crop.
+- Each block has a `텍스트 자동 맞춤` toggle that shrinks text to fit the current box and PNG export.
 - Starting translation again after existing work shows an overwrite confirmation.
 - `Cancel` aborts the current request and terminates the managed model process.

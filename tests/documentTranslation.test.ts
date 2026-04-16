@@ -26,7 +26,10 @@ const pageA: MangaPage = {
       textAlign: "center",
       textColor: "#111111",
       backgroundColor: "#fffdf5",
-      opacity: 0.78
+      opacity: 0.78,
+      autoFitText: true,
+      readingText: "ざんねん",
+      ocrRawText: "ざんねん | 残念だったな"
     }
   ]
 };
@@ -55,7 +58,8 @@ const pageB: MangaPage = {
       textAlign: "center",
       textColor: "#111111",
       backgroundColor: "#fffdf5",
-      opacity: 0.78
+      opacity: 0.78,
+      autoFitText: true
     }
   ]
 };
@@ -65,6 +69,8 @@ describe("document translation batching", () => {
     const batches = buildDocumentTranslationBatches([pageA, pageB], 99999);
     expect(batches).toHaveLength(1);
     expect(batches[0].items.map((item) => item.blockId)).toEqual(["page-a-block-001", "page-b-block-001"]);
+    expect(batches[0].items[0].readingText).toBe("ざんねん");
+    expect(batches[0].items[0].ocrRawText).toBe("ざんねん | 残念だったな");
   });
 
   it("splits into multiple batches when the text budget is exceeded", () => {
@@ -89,6 +95,7 @@ describe("document translation batching", () => {
     const pages = applyTranslationBatchToPages([pageA, pageB], raw.items);
     expect(pages[0].blocks[0].translatedText).toBe("아쉽구나");
     expect(pages[0].blocks[0].renderDirection).toBe("horizontal");
+    expect(pages[0].blocks[0].autoFitText).toBe(true);
     expect(pages[1].blocks[0].translatedText).toBe("");
   });
 });

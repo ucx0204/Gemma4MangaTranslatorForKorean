@@ -39,6 +39,7 @@ export type TranslationBlock = {
   textColor: string;
   backgroundColor: string;
   opacity: number;
+  autoFitText?: boolean;
   readingText?: string;
   ocrRawText?: string;
   ocrConfidence?: number;
@@ -128,6 +129,7 @@ export type DocumentTranslationBatchItem = {
   typeHint: BlockType;
   sourceDirection: TextDirection;
   readingText?: string;
+  ocrRawText?: string;
 };
 
 export type DocumentTranslationBatch = {

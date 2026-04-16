@@ -4,5 +4,6 @@ out/
 .venv-glmocr/
 .env
 .env.local
+scripts/__pycache__/
 tmp-tiles/
 tmp-*.png

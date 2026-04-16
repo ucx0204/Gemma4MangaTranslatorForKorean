@@ -3,7 +3,7 @@ import { buildOcrBlockCandidates, normalizeOcrText, ocrCandidatesToTranslationBl
 import type { AnalysisRequestPage, OcrSpan } from "../src/shared/types";
 
 describe("OCR normalization and block building", () => {
-  it("removes furigana from source text and preserves it as reading text", () => {
+  it("keeps main text clean and preserves furigana as reading text for translation hints", () => {
     const spans: OcrSpan[] = [
       {
         id: "main",
@@ -29,6 +29,7 @@ describe("OCR normalization and block building", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].sourceText).toBe("残念だったな");
     expect(candidates[0].readingText).toBe("ざんねん");
+    expect(candidates[0].ocrRawText).toContain("ざんねん");
   });
 
   it("merges nearby vertical spans into one speech block in reading order", () => {
@@ -86,6 +87,7 @@ describe("OCR normalization and block building", () => {
     expect(blocks[0].sourceText).toBe("生きていられたのに");
     expect(blocks[0].renderDirection).toBe("horizontal");
     expect(blocks[0].translatedText).toBe("");
+    expect(blocks[0].autoFitText).toBe(true);
   });
 
   it("keeps clearly separated manga bubbles as separate OCR blocks", () => {

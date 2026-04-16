@@ -69,6 +69,7 @@ export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, cand
       textColor: DEFAULT_TEXT_COLOR,
       backgroundColor: DEFAULT_BACKGROUND_COLOR,
       opacity: 0.78,
+      autoFitText: true,
       readingText: candidate.readingText,
       ocrRawText: candidate.ocrRawText,
       ocrConfidence: candidate.confidence
@@ -237,7 +238,13 @@ function buildCandidateFromGroup(
     return null;
   }
 
-  const rawTexts = ordered.map((span) => span.textRaw);
+  const rawTexts = ordered.map((span) => {
+    const attached = allSpans
+      .filter((candidate) => candidate.parentSpanId === span.id && candidate.isFurigana)
+      .sort((left, right) => compareSpans(left, right, writingMode))
+      .map((candidate) => candidate.textRaw);
+    return [span.textRaw, ...attached].filter(Boolean).join(" ");
+  });
   const readingText = ordered
     .flatMap((span) =>
       allSpans

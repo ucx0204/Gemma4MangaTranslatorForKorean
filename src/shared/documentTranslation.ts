@@ -121,7 +121,8 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
         textAlign: normalizeTextAlign(item.textAlign ?? item.text_align ?? block.textAlign),
         textColor: normalizeColor(item.textColor ?? item.text_color ?? block.textColor, DEFAULT_TEXT_COLOR),
         backgroundColor: normalizeColor(item.backgroundColor ?? item.background_color ?? block.backgroundColor, DEFAULT_BACKGROUND_COLOR),
-        opacity: clamp(Number.isFinite(opacity) ? opacity : block.opacity, 0.1, 1)
+        opacity: clamp(Number.isFinite(opacity) ? opacity : block.opacity, 0.1, 1),
+        autoFitText: block.autoFitText ?? true
       };
     })
   }));
@@ -135,7 +136,8 @@ function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslat
     sourceText: block.sourceText,
     typeHint: block.type,
     sourceDirection: block.sourceDirection,
-    readingText: block.readingText
+    readingText: block.readingText,
+    ocrRawText: block.ocrRawText
   };
 }
 
@@ -157,5 +159,8 @@ function chunkItems(items: DocumentTranslationBatchItem[], limit: number): Docum
 }
 
 function estimateBatchCost(items: DocumentTranslationBatchItem[]): number {
-  return items.reduce((sum, item) => sum + item.sourceText.length + (item.readingText?.length ?? 0) + item.pageName.length + 32, 0);
+  return items.reduce(
+    (sum, item) => sum + item.sourceText.length + (item.readingText?.length ?? 0) + (item.ocrRawText?.length ?? 0) + item.pageName.length + 32,
+    0
+  );
 }

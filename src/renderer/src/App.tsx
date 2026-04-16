@@ -19,6 +19,8 @@ const DEFAULT_INPAINT: InpaintSettings = {
   cropPaddingPx: 48
 };
 
+const MEASURE_CANVAS = document.createElement("canvas");
+
 type DragMode = "move" | "resize";
 
 type DragState = {
@@ -27,6 +29,11 @@ type DragState = {
   startX: number;
   startY: number;
   startBbox: BBox;
+};
+
+type ViewportSize = {
+  width: number;
+  height: number;
 };
 
 function App(): React.JSX.Element {
@@ -39,6 +46,7 @@ function App(): React.JSX.Element {
   const [statusLines, setStatusLines] = useState<string[]>([]);
   const [pendingSnapshot, setPendingSnapshot] = useState<MangaPage[] | null>(null);
   const [logPath, setLogPath] = useState<string>("");
+  const [stageSize, setStageSize] = useState<ViewportSize | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -72,6 +80,33 @@ function App(): React.JSX.Element {
         void window.mangaApi.writeLog("error", "Failed to read log path", String(error));
       });
   }, []);
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image) {
+      setStageSize(null);
+      return;
+    }
+
+    const updateStageSize = () => {
+      setStageSize({
+        width: image.clientWidth || selectedPage?.width || 0,
+        height: image.clientHeight || selectedPage?.height || 0
+      });
+    };
+
+    updateStageSize();
+    const observer = new ResizeObserver(() => updateStageSize());
+    observer.observe(image);
+    image.addEventListener("load", updateStageSize);
+    window.addEventListener("resize", updateStageSize);
+
+    return () => {
+      observer.disconnect();
+      image.removeEventListener("load", updateStageSize);
+      window.removeEventListener("resize", updateStageSize);
+    };
+  }, [selectedPage?.height, selectedPage?.id, selectedPage?.width]);
 
   const currentProject: MangaProject = useMemo(
     () => ({
@@ -472,6 +507,8 @@ function App(): React.JSX.Element {
                 <OverlayBlock
                   key={block.id}
                   block={block}
+                  pageSize={{ width: selectedPage.width, height: selectedPage.height }}
+                  stageSize={stageSize ?? { width: selectedPage.width, height: selectedPage.height }}
                   selected={block.id === selectedBlockId}
                   onPointerDown={(event) => onBlockPointerDown(event, block, "move")}
                   onResizePointerDown={(event) => onBlockPointerDown(event, block, "resize")}
@@ -506,11 +543,15 @@ function App(): React.JSX.Element {
 
 function OverlayBlock({
   block,
+  pageSize,
+  stageSize,
   selected,
   onPointerDown,
   onResizePointerDown
 }: {
   block: TranslationBlock;
+  pageSize: ViewportSize;
+  stageSize: ViewportSize;
   selected: boolean;
   onPointerDown: (event: React.PointerEvent) => void;
   onResizePointerDown: (event: React.PointerEvent) => void;
@@ -519,6 +560,8 @@ function OverlayBlock({
     return null;
   }
 
+  const displayText = block.translatedText || block.sourceText || "...";
+  const fontSizePx = resolveOverlayFontSizePx(block, displayText, pageSize, stageSize);
   const style: React.CSSProperties = {
     left: `${block.bbox.x / 10}%`,
     top: `${block.bbox.y / 10}%`,
@@ -526,7 +569,7 @@ function OverlayBlock({
     height: `${block.bbox.h / 10}%`,
     color: block.textColor,
     backgroundColor: hexToRgba(block.backgroundColor, block.opacity),
-    fontSize: `${block.fontSizePx}px`,
+    fontSize: `${fontSizePx}px`,
     lineHeight: block.lineHeight,
     textAlign: block.textAlign,
     writingMode: block.renderDirection === "vertical" ? "vertical-rl" : "horizontal-tb",
@@ -535,7 +578,7 @@ function OverlayBlock({
 
   return (
     <div className={selected ? "overlay-block selected" : "overlay-block"} style={style} onPointerDown={onPointerDown}>
-      <div className="overlay-text">{block.translatedText || block.sourceText || "..."}</div>
+      <div className="overlay-text">{displayText}</div>
       {selected ? <button className="resize-handle" onPointerDown={onResizePointerDown} aria-label="Resize" /> : null}
     </div>
   );
@@ -598,8 +641,17 @@ function EditorPanel({
           <option value="hidden">hidden</option>
         </select>
       </label>
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={block.autoFitText ?? true}
+          disabled={disabled}
+          onChange={(event) => onUpdate({ autoFitText: event.target.checked })}
+        />
+        <span>텍스트 자동 맞춤</span>
+      </label>
       <label>
-        Font {block.fontSizePx}px
+        {block.autoFitText ?? true ? `Font max ${block.fontSizePx}px` : `Font ${block.fontSizePx}px`}
         <input
           type="range"
           min={10}
@@ -676,23 +728,25 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
   const y = (block.bbox.y / 1000) * height;
   const w = (block.bbox.w / 1000) * width;
   const h = (block.bbox.h / 1000) * height;
+  const displayText = block.translatedText || block.sourceText || "...";
+  const fontSizePx = resolveCanvasFontSizePx(block, displayText, { width, height });
   context.save();
   context.fillStyle = hexToRgba(block.backgroundColor, block.opacity);
   context.fillRect(x, y, w, h);
   context.fillStyle = block.textColor;
-  context.font = `600 ${block.fontSizePx}px "Malgun Gothic", "Apple SD Gothic Neo", sans-serif`;
+  context.font = buildFont(fontSizePx);
   context.textBaseline = "top";
   context.textAlign = block.textAlign;
   const textX = block.textAlign === "left" ? x + 8 : block.textAlign === "right" ? x + w - 8 : x + w / 2;
 
   if (block.renderDirection === "vertical") {
-    drawVerticalText(context, block.translatedText, x + w / 2, y + 8, block.fontSizePx, h - 16);
+    drawVerticalText(context, displayText, x + 8, y + 8, w - 16, h - 16, fontSizePx);
   } else if (block.renderDirection === "rotated") {
     context.translate(x + w / 2, y + h / 2);
     context.rotate((-8 * Math.PI) / 180);
-    drawWrappedText(context, block.translatedText, -w / 2 + 8, -h / 2 + 8, w - 16, block.fontSizePx * block.lineHeight);
+    drawWrappedText(context, displayText, -w / 2 + 8, -h / 2 + 8, w - 16, fontSizePx * block.lineHeight);
   } else {
-    drawWrappedText(context, block.translatedText, textX, y + 8, w - 16, block.fontSizePx * block.lineHeight, block.textAlign);
+    drawWrappedText(context, displayText, textX, y + 8, w - 16, fontSizePx * block.lineHeight, block.textAlign);
   }
   context.restore();
 }
@@ -706,38 +760,29 @@ function drawWrappedText(
   lineHeight: number,
   align: "left" | "center" | "right" = "left"
 ): void {
-  const words = text.replace(/\s+/g, " ").split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (context.measureText(candidate).width <= maxWidth || !current) {
-      current = candidate;
-    } else {
-      lines.push(current);
-      current = word;
-    }
-  }
-  if (current) {
-    lines.push(current);
-  }
-
+  const lines = wrapTextToWidth(context, text, maxWidth);
   context.textAlign = align;
   for (const [index, line] of lines.entries()) {
     context.fillText(line, x, y + index * lineHeight, maxWidth);
   }
 }
 
-function drawVerticalText(context: CanvasRenderingContext2D, text: string, x: number, y: number, fontSize: number, maxHeight: number): void {
-  const chars = [...text.replace(/\s+/g, "")];
-  let offset = 0;
-  for (const char of chars) {
-    if (offset + fontSize > maxHeight) {
-      break;
+function drawVerticalText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  maxHeight: number,
+  fontSize: number
+): void {
+  const layout = layoutVerticalColumns(text, fontSize, maxHeight);
+  const rightEdge = x + maxWidth;
+  for (const [columnIndex, column] of layout.columns.entries()) {
+    const columnX = rightEdge - fontSize / 2 - columnIndex * fontSize;
+    for (const [rowIndex, char] of column.entries()) {
+      context.fillText(char, columnX, y + rowIndex * layout.advance);
     }
-    context.fillText(char, x, y + offset);
-    offset += fontSize * 1.05;
   }
 }
 
@@ -760,6 +805,124 @@ function hexToRgba(hex: string, alpha: number): string {
 
 function clonePages(pages: MangaPage[]): MangaPage[] {
   return JSON.parse(JSON.stringify(pages)) as MangaPage[];
+}
+
+function resolveOverlayFontSizePx(block: TranslationBlock, text: string, pageSize: ViewportSize, stageSize: ViewportSize): number {
+  const scale = Math.min(
+    stageSize.width / Math.max(1, pageSize.width),
+    stageSize.height / Math.max(1, pageSize.height)
+  );
+  const maxFontSize = Math.max(8, Math.floor(block.fontSizePx * scale));
+  const innerWidth = Math.max(12, (block.bbox.w / 1000) * stageSize.width - 12);
+  const innerHeight = Math.max(12, (block.bbox.h / 1000) * stageSize.height - 12);
+  return resolveTextFontSizePx(block, text, maxFontSize, innerWidth, innerHeight);
+}
+
+function resolveCanvasFontSizePx(block: TranslationBlock, text: string, pageSize: ViewportSize): number {
+  const innerWidth = Math.max(12, (block.bbox.w / 1000) * pageSize.width - 16);
+  const innerHeight = Math.max(12, (block.bbox.h / 1000) * pageSize.height - 16);
+  return resolveTextFontSizePx(block, text, block.fontSizePx, innerWidth, innerHeight);
+}
+
+function resolveTextFontSizePx(
+  block: TranslationBlock,
+  text: string,
+  maxFontSize: number,
+  innerWidth: number,
+  innerHeight: number
+): number {
+  const capped = Math.max(8, Math.floor(maxFontSize));
+  if (!(block.autoFitText ?? true) || !text.trim()) {
+    return capped;
+  }
+
+  let low = 8;
+  let high = capped;
+  let best = 8;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (doesTextFit(block, text, mid, innerWidth, innerHeight)) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return Math.min(best, capped);
+}
+
+function doesTextFit(block: TranslationBlock, text: string, fontSize: number, innerWidth: number, innerHeight: number): boolean {
+  const context = getMeasureContext();
+  context.font = buildFont(fontSize);
+
+  if (block.renderDirection === "vertical") {
+    const layout = layoutVerticalColumns(text, fontSize, innerHeight);
+    return layout.width <= innerWidth;
+  }
+
+  const lines = wrapTextToWidth(context, text, innerWidth);
+  const totalHeight = lines.length * fontSize * block.lineHeight;
+  return totalHeight <= innerHeight;
+}
+
+function wrapTextToWidth(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const paragraphs = text.replace(/\r/g, "").split("\n");
+  const lines: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const normalized = paragraph.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      lines.push("");
+      continue;
+    }
+
+    let current = "";
+    for (const char of [...normalized]) {
+      const candidate = `${current}${char}`;
+      if (!current || context.measureText(candidate).width <= maxWidth) {
+        current = candidate;
+        continue;
+      }
+
+      lines.push(current.trimEnd());
+      current = /\s/u.test(char) ? "" : char;
+    }
+
+    if (current) {
+      lines.push(current.trimEnd());
+    }
+  }
+
+  return lines.length > 0 ? lines : [text];
+}
+
+function layoutVerticalColumns(text: string, fontSize: number, maxHeight: number): { columns: string[][]; width: number; advance: number } {
+  const chars = [...text.replace(/\s+/g, "")];
+  const advance = fontSize * 1.05;
+  const maxRows = Math.max(1, Math.floor(maxHeight / Math.max(1, advance)));
+  const columns: string[][] = [];
+
+  for (let index = 0; index < chars.length; index += maxRows) {
+    columns.push(chars.slice(index, index + maxRows));
+  }
+
+  return {
+    columns: columns.length > 0 ? columns : [[]],
+    width: Math.max(1, columns.length) * fontSize,
+    advance
+  };
+}
+
+function getMeasureContext(): CanvasRenderingContext2D {
+  const context = MEASURE_CANVAS.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context is not available");
+  }
+  return context;
+}
+
+function buildFont(fontSize: number): string {
+  return `600 ${fontSize}px "Malgun Gothic", "Apple SD Gothic Neo", sans-serif`;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
