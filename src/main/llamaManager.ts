@@ -88,7 +88,7 @@ export class LlamaManager {
         ...baseBatch,
         glossary: buildTranslationGlossary(nextPages, glossaryLimit)
       };
-      const translated = await this.translateBatch(batch);
+      const translated = await this.translateBatchAdaptive(batch, warnings);
       nextPages = applyTranslationBatchToPages(nextPages, translated.items ?? []);
 
       const missingBlockIds = findUntranslatedBlockIds(
@@ -107,7 +107,7 @@ export class LlamaManager {
           items: batch.items.filter((item) => missingBlockIds.includes(item.blockId)),
           glossary: buildTranslationGlossary(nextPages, glossaryLimit)
         };
-        const retried = await this.translateBatch(retryBatch, true);
+        const retried = await this.translateBatchAdaptive(retryBatch, warnings, true);
         nextPages = applyTranslationBatchToPages(nextPages, retried.items ?? []);
 
         const stillMissing = findUntranslatedBlockIds(nextPages, retryBatch.items.map((item) => item.blockId));
@@ -123,7 +123,7 @@ export class LlamaManager {
               items: [singleItem],
               glossary: buildTranslationGlossary(nextPages, glossaryLimit)
             };
-            const singleResult = await this.translateBatch(singleBatch, true);
+            const singleResult = await this.translateBatchAdaptive(singleBatch, warnings, true);
             nextPages = applyTranslationBatchToPages(nextPages, singleResult.items ?? []);
           }
 
@@ -136,6 +136,59 @@ export class LlamaManager {
     }
 
     return { pages: nextPages, warnings };
+  }
+
+  private async translateBatchAdaptive(
+    batch: DocumentTranslationBatch,
+    warnings: string[],
+    retry = false,
+    splitDepth = 0
+  ): Promise<RawGemmaTranslationBatch> {
+    try {
+      return await this.translateBatch(batch, retry);
+    } catch (error) {
+      if (!isContextOverflowError(error)) {
+        throw error;
+      }
+
+      if (batch.items.length <= 1) {
+        throw new Error(
+          `Gemma context overflow for block ${batch.items[0]?.blockId ?? "unknown"}. Increase MANGA_TRANSLATOR_CTX beyond ${this.readStringEnv("MANGA_TRANSLATOR_CTX", "32768")} or reduce the OCR text.`
+        );
+      }
+
+      const splitIndex = Math.ceil(batch.items.length / 2);
+      const leftItems = batch.items.slice(0, splitIndex);
+      const rightItems = batch.items.slice(splitIndex);
+      const detail = `컨텍스트 초과로 ${batch.items.length}개 블록을 ${leftItems.length}+${rightItems.length}로 나눠 다시 시도합니다.`;
+      warnings.push(`Chunk ${batch.chunkIndex}: ${detail}`);
+      logWarn("Gemma batch exceeded context; splitting batch", {
+        chunkIndex: batch.chunkIndex,
+        totalChunks: batch.totalChunks,
+        splitDepth,
+        itemCount: batch.items.length,
+        leftCount: leftItems.length,
+        rightCount: rightItems.length
+      });
+      this.emit("running", `문서 번역 ${batch.chunkIndex}/${batch.totalChunks}`, detail);
+
+      const leftBatch: DocumentTranslationBatch = {
+        ...batch,
+        items: leftItems
+      };
+      const rightBatch: DocumentTranslationBatch = {
+        ...batch,
+        items: rightItems
+      };
+
+      const leftResult = await this.translateBatchAdaptive(leftBatch, warnings, retry, splitDepth + 1);
+      const rightResult = await this.translateBatchAdaptive(rightBatch, warnings, retry, splitDepth + 1);
+
+      return {
+        items: [...(leftResult.items ?? []), ...(rightResult.items ?? [])],
+        warnings: [...(leftResult.warnings ?? []), ...(rightResult.warnings ?? [])]
+      };
+    }
   }
 
   public async shutdown(): Promise<void> {
@@ -314,7 +367,7 @@ export class LlamaManager {
       "--port",
       port,
       "--n-cpu-moe",
-      this.readStringEnv("MANGA_TRANSLATOR_N_CPU_MOE", "8"),
+      this.readStringEnv("MANGA_TRANSLATOR_N_CPU_MOE", "9"),
       "--fit",
       "on",
       "--fit-target",
@@ -328,7 +381,7 @@ export class LlamaManager {
       "--reasoning-budget",
       "0",
       "-c",
-      this.readStringEnv("MANGA_TRANSLATOR_CTX", "16384"),
+      this.readStringEnv("MANGA_TRANSLATOR_CTX", "32768"),
       "-b",
       this.readStringEnv("MANGA_TRANSLATOR_BATCH", "128"),
       "-ub",
@@ -462,4 +515,9 @@ function tokenizeArgs(input: string): string[] {
   }
 
   return tokens;
+}
+
+function isContextOverflowError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /exceeds the available context size|exceed_context_size_error|available context size/i.test(message);
 }

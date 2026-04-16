@@ -1,7 +1,9 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const DEFAULT_LOG_PATH = join(process.cwd(), "logs", "app.log");
+const UTF8_BOM = "\ufeff";
+let ensuredLogPath: string | null = null;
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -35,6 +37,7 @@ export function writeLog(level: LogLevel, message: string, detail?: unknown): vo
 
   try {
     mkdirSync(dirname(logPath), { recursive: true });
+    ensureUtf8Bom(logPath);
     appendFileSync(logPath, line, "utf8");
   } catch (error) {
     console.error("Failed to write app log", error);
@@ -72,4 +75,29 @@ function serializeDetail(detail: unknown): string {
   } catch {
     return String(detail);
   }
+}
+
+function ensureUtf8Bom(logPath: string): void {
+  if (ensuredLogPath === logPath) {
+    return;
+  }
+
+  if (!existsSync(logPath)) {
+    writeFileSync(logPath, UTF8_BOM, "utf8");
+    ensuredLogPath = logPath;
+    return;
+  }
+
+  if (statSync(logPath).size === 0) {
+    writeFileSync(logPath, UTF8_BOM, "utf8");
+    ensuredLogPath = logPath;
+    return;
+  }
+
+  const content = readFileSync(logPath);
+  const hasBom = content.length >= 3 && content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf;
+  if (!hasBom) {
+    writeFileSync(logPath, Buffer.concat([Buffer.from(UTF8_BOM, "utf8"), content]));
+  }
+  ensuredLogPath = logPath;
 }

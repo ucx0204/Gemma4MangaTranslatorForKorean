@@ -60,13 +60,13 @@ $env:MANGA_TRANSLATOR_MODEL_HF="Jiunsong/supergemma4-26b-abliterated-multimodal-
 $env:MANGA_TRANSLATOR_LLAMA_PORT="18080"
 $env:MANGA_TRANSLATOR_FIT_TARGET_MB="8192"
 $env:MANGA_TRANSLATOR_GPU_LAYERS="all"
-$env:MANGA_TRANSLATOR_N_CPU_MOE="8"
-$env:MANGA_TRANSLATOR_CTX="16384"
+$env:MANGA_TRANSLATOR_N_CPU_MOE="9"
+$env:MANGA_TRANSLATOR_CTX="32768"
 $env:MANGA_TRANSLATOR_MAX_TOKENS="12288"
 ```
 
 If `C:\Users\sam40\Desktop\llama-cuda-b8766\llama-server.exe` exists, it is preferred by default so CUDA is used instead of the Winget Vulkan build.
-The launch defaults follow the twitch-backend shape but push slightly more work to GPU and leave more context for image tokens: `-ngl all --n-cpu-moe 8 --fit on --fit-target 8192 -c 16384 -b 128 -ub 128 -np 1 --no-cache-prompt --cache-ram 0`.
+The launch defaults follow the twitch-backend shape but push slightly more work to GPU and leave more context headroom: `-ngl all --n-cpu-moe 9 --fit on --fit-target 8192 -c 32768 -b 128 -ub 128 -np 1 --no-cache-prompt --cache-ram 0`.
 
 ## GLM-OCR
 
@@ -117,6 +117,7 @@ $env:MANGA_TRANSLATOR_GLOSSARY_LIMIT="32"
 ```
 
 Large documents are chunked by page order, and previous translated terms are fed back as a glossary to keep naming and tone consistent.
+If Gemma still throws a context overflow, the app automatically retries by splitting the current OCR block batch in half, and keeps halving recursively until it fits.
 
 ## Inpainting Without ComfyUI
 
