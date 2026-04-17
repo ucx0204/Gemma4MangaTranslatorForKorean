@@ -44,6 +44,12 @@ export type TranslationBlock = {
   ocrRawText?: string;
   ocrConfidence?: number;
   cleanSourceText?: string;
+  bubbleId?: string;
+  pageId?: string;
+  readingOrder?: number;
+  taskId?: string;
+  collageGroupSize?: number;
+  ocrAttempt?: "single" | "collage";
 };
 
 export type MangaPage = {

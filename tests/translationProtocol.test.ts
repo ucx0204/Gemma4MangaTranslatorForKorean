@@ -26,7 +26,7 @@ describe("parseTranslationPayload", () => {
     });
   });
 
-  it("keeps malformed b3-prefixed lines from contaminating the previous id", () => {
+  it("drops malformed b3-prefixed lines instead of contaminating neighboring ids", () => {
     const issues: TranslationPayloadIssue[] = [];
     const parsed = parseTranslationPayload(
       "b1\t마, 설마...\nb2\t리오네 공주님 곁에 이토록 강한 기사가 있었을 줄이야!\nb3-top-level-tier-monsters-killed-by-one-maid-only-first-wave-of-enemies-left\nb4\t그 메이드는 대체 누구죠?",
@@ -38,7 +38,6 @@ describe("parseTranslationPayload", () => {
     expect(parsed.items).toEqual({
       b1: "마, 설마...",
       b2: "리오네 공주님 곁에 이토록 강한 기사가 있었을 줄이야!",
-      b3: "top-level-tier-monsters-killed-by-one-maid-only-first-wave-of-enemies-left",
       b4: "그 메이드는 대체 누구죠?"
     });
     expect(issues).toEqual([
@@ -106,6 +105,51 @@ describe("parseTranslationPayload", () => {
         blockId: "g11"
       }
     ]);
+  });
+
+  it("does not let stray broken id text leak into the previous line", () => {
+    const issues: TranslationPayloadIssue[] = [];
+    const parsed = parseTranslationPayload(
+      "b28\t걱정 끼쳤어요\nb a: b29- 하지만\nb30- 그래도 마법은",
+      {
+        onIssue: (issue) => issues.push(issue)
+      }
+    );
+
+    expect(parsed.items).toEqual({
+      b28: "걱정 끼쳤어요",
+      b30: "그래도 마법은"
+    });
+    expect(issues).toEqual([
+      {
+        code: "malformed_id_line",
+        lineNumber: 2,
+        line: "b a: b29- 하지만",
+        blockId: "b29"
+      }
+    ]);
+  });
+
+  it("parses lines with a hyphen separator when the model uses list-style formatting", () => {
+    const parsed = parseTranslationPayload("b1- 보고합니다\nb2- 계획은 실패한 모양이네요");
+    expect(parsed.items).toEqual({
+      b1: "보고합니다",
+      b2: "계획은 실패한 모양이네요"
+    });
+  });
+
+  it("parses markdown-table-ish lines with a leading pipe", () => {
+    const parsed = parseTranslationPayload("| b1\t언제든 마법을 보여드릴 수 있어요!");
+    expect(parsed.items).toEqual({
+      b1: "언제든 마법을 보여드릴 수 있어요!"
+    });
+  });
+
+  it("strips channel markers before parsing tabbed translation lines", () => {
+    const parsed = parseTranslationPayload("<|channel>|thought\n<channel|>b1\t걱정 끼쳐 드렸습니다.");
+    expect(parsed.items).toEqual({
+      b1: "걱정 끼쳐 드렸습니다."
+    });
   });
 
   it("treats a bare id-only line as an empty protocol response instead of throwing", () => {

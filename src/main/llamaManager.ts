@@ -2,6 +2,7 @@ import { nativeImage, type NativeImage } from "electron";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildBubbleOcrGroups } from "../shared/bubblePipeline";
 import {
   applyTranslationBatchToPages,
   buildCompactGemmaPayload,
@@ -35,10 +36,13 @@ import type {
   RawGemmaTranslationBatch
 } from "../shared/types";
 import { countBatchPages, summarizeSource, withModelIds } from "./llm/batching";
+import { buildBubbleOcrSystemPrompt, buildBubbleOcrUserText } from "./llm/bubbleOcrPrompt";
 import { extractPayloadFromResponse, postChatCompletion } from "./llm/chatClient";
+import { buildGlossarySystemPrompt, buildGlossaryUserMessage } from "./llm/glossaryPrompt";
 import { buildPolishSystemPrompt, buildPolishUserMessage } from "./llm/polishPrompt";
 import { buildDocumentTranslationSystemPrompt, buildDocumentTranslationUserMessage, progressTextForMode } from "./llm/prompt";
-import { normalizeTranslationBatchResponse, type RejectedTranslation } from "./llm/responseNormalization";
+import { normalizeProtocolLine, normalizeProtocolPayload } from "./llm/protocolCleanup";
+import { normalizeModelTranslationText, normalizeTranslationBatchResponse, type RejectedTranslation } from "./llm/responseNormalization";
 import {
   buildSourceCleanupPayload,
   buildSourceCleanupSystemPrompt,
@@ -63,8 +67,27 @@ type LlamaManagerOptions = {
   signal: AbortSignal;
 };
 
-const DEFAULT_MODEL_HF = "Jiunsong/supergemma4-26b-abliterated-multimodal-gguf-4bit:Q4_K_M";
+const DEFAULT_MODEL_HF = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_K_M";
 const DEFAULT_PORT = "18080";
+
+type BubbleOcrRequestItem = {
+  blockId: string;
+  modelId: string;
+  pageId: string;
+  pageName: string;
+  bbox: BBox;
+  sourceDirection: DocumentTranslationBatchItem["sourceDirection"];
+};
+
+type BubbleOcrTask = {
+  taskId: string;
+  pageId: string;
+  pageName: string;
+  items: BubbleOcrRequestItem[];
+  collageGroupSize: number;
+  ocrAttempt: "single" | "collage";
+  imageDataUrl: string;
+};
 
 export class LlamaManager {
   private child: ChildProcess | null = null;
@@ -115,6 +138,13 @@ export class LlamaManager {
   }
 
   public async translateDocument(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    if (this.readPipelineMode() === "bubble_collage") {
+      return await this.translateDocumentBubblePipeline(pages);
+    }
+    return await this.translateDocumentLegacy(pages);
+  }
+
+  private async translateDocumentLegacy(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
     this.options.signal.throwIfAborted();
     let nextPages = clonePages(pages);
     const warnings: string[] = [];
@@ -142,6 +172,597 @@ export class LlamaManager {
     }
 
     return { pages: nextPages, warnings };
+  }
+
+  private async translateDocumentBubblePipeline(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    this.options.signal.throwIfAborted();
+    let nextPages = clonePages(pages);
+    const warnings: string[] = [];
+    this.rejectedTranslations.clear();
+
+    const bubbleOcrResult = await this.extractBubbleJapaneseSources(nextPages);
+    nextPages = bubbleOcrResult.pages;
+    warnings.push(...bubbleOcrResult.warnings);
+
+    const sourceItems = flattenDocumentTranslationItems(nextPages).filter((item) => Boolean(selectModelSource(item)));
+    if (sourceItems.length === 0) {
+      return { pages: nextPages, warnings };
+    }
+
+    const glossary = await this.buildCumulativeGlossary(sourceItems);
+    const baseBatches = this.buildBubbleTranslationBatches(sourceItems, glossary);
+    const fittedBatches = await this.fitBatchesToTokenBudget(baseBatches, "initial");
+
+    for (const batch of fittedBatches) {
+      this.options.signal.throwIfAborted();
+      nextPages = await this.translateBatchWithRetries(nextPages, batch, warnings);
+    }
+
+    return { pages: nextPages, warnings };
+  }
+
+  private async extractBubbleJapaneseSources(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    let nextPages = pages;
+    const warnings: string[] = [];
+    const sourceByBlockId = new Map<string, { text: string; taskId: string; collageGroupSize: number; ocrAttempt: "single" | "collage" }>();
+    const taskBuild = this.buildBubbleOcrTasks(nextPages);
+    warnings.push(...taskBuild.warnings);
+
+    const applyAccepted = (
+      accepted: Map<string, string>,
+      task: Pick<BubbleOcrTask, "taskId" | "collageGroupSize" | "ocrAttempt">
+    ) => {
+      for (const [blockId, text] of accepted.entries()) {
+        sourceByBlockId.set(blockId, {
+          text,
+          taskId: task.taskId,
+          collageGroupSize: task.collageGroupSize,
+          ocrAttempt: task.ocrAttempt
+        });
+      }
+    };
+
+    const totalTasks = Math.max(1, taskBuild.tasks.length);
+    let taskNumber = 0;
+    for (const task of taskBuild.tasks) {
+      this.options.signal.throwIfAborted();
+      taskNumber += 1;
+      const ocrResult = await this.requestBubbleOcrTask(task, taskNumber, totalTasks);
+      applyAccepted(ocrResult.accepted, task);
+
+      if (ocrResult.failedItems.length === 0) {
+        continue;
+      }
+
+      if (task.ocrAttempt === "single") {
+        for (const failedItem of ocrResult.failedItems) {
+          warnings.push(`[bubble_ocr] ${failedItem.pageName} ${failedItem.blockId} 원문 재구성에 실패했습니다.`);
+        }
+        continue;
+      }
+
+      const retryTasks = this.buildSingleBubbleRetryTasks(nextPages, task, ocrResult.failedItems);
+      warnings.push(...retryTasks.warnings);
+      for (const retryTask of retryTasks.tasks) {
+        this.options.signal.throwIfAborted();
+        const retried = await this.requestBubbleOcrTask(retryTask, taskNumber, totalTasks);
+        applyAccepted(retried.accepted, retryTask);
+        for (const failedItem of retried.failedItems) {
+          warnings.push(`[bubble_ocr] ${failedItem.pageName} ${failedItem.blockId} 단독 재시도까지 실패했습니다.`);
+        }
+      }
+    }
+
+    nextPages = this.applyBubbleSourceTexts(nextPages, sourceByBlockId);
+    return { pages: nextPages, warnings };
+  }
+
+  private buildBubbleOcrTasks(pages: MangaPage[]): { tasks: BubbleOcrTask[]; warnings: string[] } {
+    const tasks: BubbleOcrTask[] = [];
+    const warnings: string[] = [];
+    const collageSize = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_COLLAGE_SIZE", "4")));
+
+    for (const page of pages) {
+      if (!page.dataUrl || page.blocks.length === 0) {
+        continue;
+      }
+
+      const sourceImage = nativeImage.createFromDataURL(page.dataUrl);
+      if (sourceImage.isEmpty()) {
+        warnings.push(`[bubble_ocr] ${page.name} 이미지를 열지 못해 말풍선 OCR을 건너뜁니다.`);
+        continue;
+      }
+
+      const groups = buildBubbleOcrGroups(page, collageSize);
+      for (const group of groups) {
+        const items = group.bubbleIds
+          .map((bubbleId, index) => {
+            const block = page.blocks.find((candidate) => candidate.id === bubbleId);
+            if (!block) {
+              return null;
+            }
+            return {
+              blockId: block.id,
+              modelId: `o${index + 1}`,
+              pageId: page.id,
+              pageName: page.name,
+              bbox: block.bbox,
+              sourceDirection: block.sourceDirection
+            } satisfies BubbleOcrRequestItem;
+          })
+          .filter(isPresent);
+
+        if (items.length === 0) {
+          continue;
+        }
+
+        const imageDataUrl =
+          group.ocrAttempt === "single"
+            ? this.buildSingleBubbleOcrImage(page, sourceImage, items[0])
+            : this.buildBubbleCollageImage(page, sourceImage, items);
+
+        if (!imageDataUrl) {
+          warnings.push(`[bubble_ocr] ${page.name} ${group.taskId}용 bubble crop을 만들지 못했습니다.`);
+          continue;
+        }
+
+        tasks.push({
+          taskId: group.taskId,
+          pageId: page.id,
+          pageName: page.name,
+          items,
+          collageGroupSize: group.collageGroupSize,
+          ocrAttempt: group.ocrAttempt,
+          imageDataUrl
+        });
+      }
+    }
+
+    return { tasks, warnings };
+  }
+
+  private buildSingleBubbleRetryTasks(
+    pages: MangaPage[],
+    parentTask: BubbleOcrTask,
+    failedItems: BubbleOcrRequestItem[]
+  ): { tasks: BubbleOcrTask[]; warnings: string[] } {
+    const page = pages.find((candidate) => candidate.id === parentTask.pageId);
+    if (!page?.dataUrl) {
+      return {
+        tasks: [],
+        warnings: failedItems.map((item) => `[bubble_ocr] ${item.pageName} ${item.blockId} 재시도 이미지를 준비하지 못했습니다.`)
+      };
+    }
+
+    const sourceImage = nativeImage.createFromDataURL(page.dataUrl);
+    if (sourceImage.isEmpty()) {
+      return {
+        tasks: [],
+        warnings: failedItems.map((item) => `[bubble_ocr] ${item.pageName} ${item.blockId} 재시도 이미지를 열지 못했습니다.`)
+      };
+    }
+
+    const tasks: BubbleOcrTask[] = [];
+    const warnings: string[] = [];
+    for (const [index, item] of failedItems.entries()) {
+      const imageDataUrl = this.buildSingleBubbleOcrImage(page, sourceImage, item);
+      if (!imageDataUrl) {
+        warnings.push(`[bubble_ocr] ${item.pageName} ${item.blockId} 단독 crop 생성에 실패했습니다.`);
+        continue;
+      }
+      tasks.push({
+        taskId: `${parentTask.taskId}-retry-${String(index + 1).padStart(2, "0")}`,
+        pageId: parentTask.pageId,
+        pageName: parentTask.pageName,
+        items: [{ ...item, modelId: "o1" }],
+        collageGroupSize: 1,
+        ocrAttempt: "single",
+        imageDataUrl
+      });
+    }
+
+    return { tasks, warnings };
+  }
+
+  private async requestBubbleOcrTask(
+    task: BubbleOcrTask,
+    taskNumber: number,
+    totalTasks: number
+  ): Promise<{ accepted: Map<string, string>; failedItems: BubbleOcrRequestItem[] }> {
+    const systemPrompt = buildBubbleOcrSystemPrompt({
+      mode: task.ocrAttempt,
+      modelIds: task.items.map((item) => item.modelId)
+    });
+    const userText = buildBubbleOcrUserText({
+      mode: task.ocrAttempt,
+      modelIds: task.items.map((item) => item.modelId)
+    });
+    const promptEstimate = await this.estimatePromptTokensWithHeuristic(`${systemPrompt}\n${userText}`);
+
+    logInfo("Sending bubble OCR task", {
+      taskId: task.taskId,
+      pageId: task.pageId,
+      pageName: task.pageName,
+      itemCount: task.items.length,
+      attempt: task.ocrAttempt,
+      promptEstimate
+    });
+    this.emit(
+      "running",
+      `버블 OCR ${taskNumber}/${totalTasks}`,
+      `${task.pageName} ${task.items.length}개 bubble, ${task.ocrAttempt}, prompt~${promptEstimate}tok`
+    );
+
+    const response = await postChatCompletion({
+      apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
+      baseUrl: this.baseUrl,
+      signal: this.options.signal,
+      model: this.readConfiguredRequestModel(),
+      temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TEMPERATURE", "0.2")),
+      topP: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_P", "0.95")),
+      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_K", "64"),
+      presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_PRESENCE_PENALTY", "0")),
+      frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_FREQUENCY_PENALTY", "0")),
+      reasoningBudget: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_REASONING_BUDGET", "8192")),
+      enableThinking: this.readBooleanEnv("MANGA_TRANSLATOR_BUBBLE_OCR_ENABLE_THINKING", true),
+      maxTokens: Math.max(256, Math.min(1024, task.items.length * 192)),
+      stop: this.buildStopSequences(),
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            {
+              type: "image_url",
+              image_url: {
+                url: task.imageDataUrl
+              }
+            }
+          ]
+        }
+      ]
+    });
+
+    let rawPayload: string;
+    try {
+      rawPayload = extractPayloadFromResponse(response);
+    } catch (error) {
+      if (!isRecoverableModelOutputError(error)) {
+        throw error;
+      }
+      logWarn("Bubble OCR task produced unusable output; marking all items for retry", {
+        taskId: task.taskId,
+        attempt: task.ocrAttempt,
+        itemCount: task.items.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return {
+        accepted: new Map<string, string>(),
+        failedItems: [...task.items]
+      };
+    }
+    const parsed = this.parseBubbleOcrPayload(rawPayload, task.items);
+    if (parsed.failedItems.length > 0) {
+      logWarn("Bubble OCR returned incomplete or invalid lines", {
+        taskId: task.taskId,
+        attempt: task.ocrAttempt,
+        failedBlockIds: parsed.failedItems.map((item) => item.blockId),
+        payloadPreview: rawPayload.slice(0, 300)
+      });
+    }
+    return parsed;
+  }
+
+  private parseBubbleOcrPayload(
+    rawPayload: string,
+    items: BubbleOcrRequestItem[]
+  ): { accepted: Map<string, string>; failedItems: BubbleOcrRequestItem[] } {
+    const requestedByModelId = new Map(items.map((item) => [item.modelId, item]));
+    const extracted = new Map<string, string>();
+    const normalizedPayload = normalizeProtocolPayload(rawPayload);
+    const lines = normalizedPayload
+      .split("\n")
+      .map((line) => normalizeProtocolLine(line))
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const match = line.match(/^(?:[-*]\s*)?(o\d{1,4})\s*(?:\t+|<tab>|[:：]|\|\s*|-\s+)\s*(.+)$/i);
+      if (!match) {
+        continue;
+      }
+      const item = requestedByModelId.get(match[1].trim());
+      if (!item) {
+        continue;
+      }
+      const normalized = normalizeBubbleOcrText(match[2]);
+      if (!normalized || isInvalidBubbleOcrText(normalized)) {
+        continue;
+      }
+      extracted.set(item.blockId, normalized);
+    }
+
+    const accepted = new Map<string, string>();
+    const failedItems: BubbleOcrRequestItem[] = [];
+    for (const item of items) {
+      const text = extracted.get(item.blockId);
+      if (!text) {
+        failedItems.push(item);
+        continue;
+      }
+      accepted.set(item.blockId, text);
+    }
+
+    if (failedItems.length > 0) {
+      logWarn("Bubble OCR parse diagnostics", {
+        requestedIds: items.map((item) => item.modelId),
+        normalizedPreview: normalizedPayload.slice(0, 200),
+        parsedBlockIds: [...accepted.keys()]
+      });
+    }
+
+    return { accepted, failedItems };
+  }
+
+  private applyBubbleSourceTexts(
+    pages: MangaPage[],
+    sourceByBlockId: ReadonlyMap<string, { text: string; taskId: string; collageGroupSize: number; ocrAttempt: "single" | "collage" }>
+  ): MangaPage[] {
+    return pages.map((page) => ({
+      ...page,
+      blocks: page.blocks.map((block) => {
+        const source = sourceByBlockId.get(block.id);
+        if (!source) {
+          return block;
+        }
+        return {
+          ...block,
+          sourceText: source.text,
+          ocrRawText: source.text,
+          cleanSourceText: source.text,
+          taskId: source.taskId,
+          collageGroupSize: source.collageGroupSize,
+          ocrAttempt: source.ocrAttempt
+        };
+      })
+    }));
+  }
+
+  private async buildCumulativeGlossary(
+    items: DocumentTranslationBatchItem[]
+  ): Promise<Array<{ sourceText: string; translatedText: string }>> {
+    const glossaryLimit = this.readGlossaryLimit();
+    if (glossaryLimit <= 0 || items.length === 0) {
+      return [];
+    }
+
+    const chunked = buildSimpleItemBatches(items, {
+      maxItems: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_MAX_ITEMS", "32")),
+      maxChars: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_CHAR_LIMIT", "4500"))
+    });
+    const glossaryBySource = new Map<string, string>();
+
+    for (const batch of chunked) {
+      this.options.signal.throwIfAborted();
+      const existingGlossary = this.listSortedGlossary(glossaryBySource).slice(0, glossaryLimit);
+      const sourceLines = batch.items.map((item) => selectModelSource(item)).filter(Boolean);
+      const candidates = await this.requestGlossaryChunk(existingGlossary, sourceLines, batch.chunkIndex, batch.totalChunks);
+      this.mergeGlossaryEntries(glossaryBySource, candidates);
+    }
+
+    return this.listSortedGlossary(glossaryBySource).slice(0, glossaryLimit);
+  }
+
+  private async requestGlossaryChunk(
+    existingGlossary: Array<{ sourceText: string; translatedText: string }>,
+    sourceLines: string[],
+    chunkIndex: number,
+    totalChunks: number
+  ): Promise<Array<{ sourceText: string; translatedText: string }>> {
+    if (sourceLines.length === 0) {
+      return [];
+    }
+
+    const systemPrompt = buildGlossarySystemPrompt();
+    const userText = buildGlossaryUserMessage({ existingGlossary, sourceLines });
+    const promptEstimate = await this.estimatePromptTokensWithHeuristic(`${systemPrompt}\n${userText}`);
+
+    logInfo("Sending cumulative glossary chunk", {
+      chunkIndex,
+      totalChunks,
+      sourceCount: sourceLines.length,
+      existingGlossaryCount: existingGlossary.length,
+      promptEstimate
+    });
+
+    const response = await postChatCompletion({
+      apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
+      baseUrl: this.baseUrl,
+      signal: this.options.signal,
+      model: this.readConfiguredRequestModel(),
+      temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_TEMPERATURE", "0")),
+      topP: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_TOP_P", "0.3")),
+      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_GLOSSARY_TOP_K", "32"),
+      presencePenalty: 0,
+      frequencyPenalty: 0,
+      maxTokens: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_MAX_TOKENS", "512")),
+      stop: this.buildStopSequences(),
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: userText
+        }
+      ]
+    });
+
+    try {
+      return parseGlossaryLines(extractPayloadFromResponse(response));
+    } catch (error) {
+      if (!isRecoverableModelOutputError(error)) {
+        throw error;
+      }
+      logWarn("Glossary chunk returned unusable output; skipping chunk", {
+        chunkIndex,
+        totalChunks,
+        sourceCount: sourceLines.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return [];
+    }
+  }
+
+  private mergeGlossaryEntries(
+    glossaryBySource: Map<string, string>,
+    candidates: Array<{ sourceText: string; translatedText: string }>
+  ): void {
+    for (const candidate of candidates) {
+      const existing = glossaryBySource.get(candidate.sourceText);
+      if (!existing || glossaryEntryScore(candidate) < glossaryEntryScore({ sourceText: candidate.sourceText, translatedText: existing })) {
+        glossaryBySource.set(candidate.sourceText, candidate.translatedText);
+      }
+    }
+  }
+
+  private listSortedGlossary(glossaryBySource: ReadonlyMap<string, string>): Array<{ sourceText: string; translatedText: string }> {
+    return [...glossaryBySource.entries()]
+      .map(([sourceText, translatedText]) => ({ sourceText, translatedText }))
+      .sort((left, right) => glossaryEntryScore(left) - glossaryEntryScore(right) || left.sourceText.localeCompare(right.sourceText));
+  }
+
+  private buildBubbleTranslationBatches(
+    items: DocumentTranslationBatchItem[],
+    glossary: Array<{ sourceText: string; translatedText: string }>
+  ): DocumentTranslationBatch[] {
+    const maxBlocks = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_BLOCKS", "32")));
+    const maxChars = Math.max(256, Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_CHAR_LIMIT", "4500")));
+    const glossaryLimit = this.readGlossaryLimit();
+    const batches: DocumentTranslationBatch[] = [];
+    let current: DocumentTranslationBatchItem[] = [];
+    let currentChars = 0;
+
+    const pushCurrent = () => {
+      if (current.length === 0) {
+        return;
+      }
+      const batchItems = current;
+      batches.push({
+        chunkIndex: batches.length + 1,
+        totalChunks: 0,
+        items: batchItems,
+        glossary: this.selectGlossaryForItems(batchItems, glossary, glossaryLimit)
+      });
+      current = [];
+      currentChars = 0;
+    };
+
+    for (const item of items) {
+      const itemCost = selectModelSource(item).length + (item.readingText?.length ?? 0) + 24;
+      if (current.length > 0 && (current.length >= maxBlocks || currentChars + itemCost > maxChars)) {
+        pushCurrent();
+      }
+      current.push(item);
+      currentChars += itemCost;
+    }
+
+    pushCurrent();
+    return batches.map((batch, index, all) => ({
+      ...batch,
+      chunkIndex: index + 1,
+      totalChunks: all.length
+    }));
+  }
+
+  private selectGlossaryForItems(
+    items: DocumentTranslationBatchItem[],
+    glossary: Array<{ sourceText: string; translatedText: string }>,
+    limit: number
+  ): Array<{ sourceText: string; translatedText: string }> {
+    if (limit <= 0 || glossary.length === 0) {
+      return [];
+    }
+
+    const sourcePool = items.map((item) => selectModelSource(item)).join("\n");
+    return [...glossary]
+      .map((entry) => ({
+        entry,
+        relevance: sourcePool.includes(entry.sourceText) ? 2 : 0,
+        score: glossaryEntryScore(entry)
+      }))
+      .sort((left, right) => right.relevance - left.relevance || left.score - right.score || left.entry.sourceText.localeCompare(right.entry.sourceText))
+      .slice(0, limit)
+      .map(({ entry }) => entry);
+  }
+
+  private buildSingleBubbleOcrImage(page: MangaPage, sourceImage: NativeImage, item: BubbleOcrRequestItem): string | undefined {
+    const crop = this.buildBubbleCropImage(page, sourceImage, item);
+    return crop ? crop.toDataURL() : undefined;
+  }
+
+  private buildBubbleCollageImage(page: MangaPage, sourceImage: NativeImage, items: BubbleOcrRequestItem[]): string | undefined {
+    const crops = items
+      .map((item) => this.buildBubbleCropImage(page, sourceImage, item))
+      .filter(isPresent);
+    if (crops.length === 0) {
+      return undefined;
+    }
+    if (crops.length === 1) {
+      return crops[0].toDataURL();
+    }
+
+    const gapPx = Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_COLLAGE_GAP_PX", "64"));
+    const horizontalPadding = Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_COLLAGE_SIDE_PADDING_PX", "48"));
+    const width = Math.max(...crops.map((crop) => crop.getSize().width)) + horizontalPadding * 2;
+    const height = crops.reduce((sum, crop) => sum + crop.getSize().height, 0) + gapPx * (crops.length + 1);
+    const bitmap = Buffer.alloc(Math.max(4, width * height * 4), 255);
+    let cursorY = gapPx;
+
+    for (const crop of crops) {
+      const size = crop.getSize();
+      const x = Math.max(0, Math.floor((width - size.width) / 2));
+      blitBitmap(bitmap, width, crop.toBitmap(), size.width, size.height, x, cursorY);
+      cursorY += size.height + gapPx;
+    }
+
+    const collage = nativeImage.createFromBitmap(bitmap, { width, height });
+    const resized = resizeCropForVision(collage, {
+      minSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_COLLAGE_MIN_SIDE_PX", "512")),
+      maxSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_COLLAGE_MAX_SIDE_PX", "2048"))
+    });
+    return resized.toDataURL();
+  }
+
+  private buildBubbleCropImage(page: MangaPage, sourceImage: NativeImage, item: BubbleOcrRequestItem): NativeImage | undefined {
+    if (!item.bbox || sourceImage.isEmpty()) {
+      return undefined;
+    }
+
+    const pixelBox = bboxToPixels(item.bbox, page.width, page.height);
+    const rect = expandPixelRect(pixelBox, page.width, page.height, {
+      ratio: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_CROP_PADDING_RATIO", this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_PADDING_RATIO", "0.22"))),
+      minPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_CROP_MIN_PADDING_PX", this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MIN_PADDING_PX", "24"))),
+      maxPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_CROP_MAX_PADDING_PX", this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MAX_PADDING_PX", "96")))
+    });
+
+    if (rect.width <= 1 || rect.height <= 1) {
+      return undefined;
+    }
+
+    const cropped = sourceImage.crop(rect);
+    if (cropped.isEmpty()) {
+      return undefined;
+    }
+
+    return resizeCropForVision(cropped, {
+      minSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_CROP_MIN_SIDE_PX", "320")),
+      maxSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_CROP_MAX_SIDE_PX", "1024"))
+    });
   }
 
   private async prepareDocumentSources(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
@@ -235,7 +856,7 @@ export class LlamaManager {
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
       signal: this.options.signal,
-      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      model: this.readConfiguredRequestModel(),
       temperature: 0,
       topP: 0.2,
       presencePenalty: 0,
@@ -385,7 +1006,7 @@ export class LlamaManager {
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
       signal: this.options.signal,
-      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      model: this.readConfiguredRequestModel(),
       temperature: 0,
       topP: 0.2,
       presencePenalty: 0,
@@ -458,7 +1079,9 @@ export class LlamaManager {
 
     let items = flattenPagesToPolishItems(nextPages);
     if (items.length === 0) {
-      warnings.push("윤문할 번역 텍스트가 없습니다.");
+      if (this.readPipelineMode() !== "bubble_collage") {
+        warnings.push("윤문할 번역 텍스트가 없습니다.");
+      }
       return { pages: nextPages, warnings };
     }
 
@@ -467,7 +1090,8 @@ export class LlamaManager {
       Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_STYLE_LIMIT", "16"))
     );
 
-    const polishMode = this.readStringEnv("MANGA_TRANSLATOR_POLISH_MODE", "repair").trim().toLowerCase();
+    const defaultPolishMode = this.readPipelineMode() === "bubble_collage" ? "full" : "repair";
+    const polishMode = this.readStringEnv("MANGA_TRANSLATOR_POLISH_MODE", defaultPolishMode).trim().toLowerCase();
     if (polishMode !== "full") {
       return this.polishDocumentInRepairMode(nextPages, styleNotes, warnings);
     }
@@ -624,16 +1248,20 @@ export class LlamaManager {
     const userMessageContent = this.buildUserMessageContent(modelBatch, userText, {
       mode
     });
+    const translationThinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING");
 
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
       signal: this.options.signal,
-      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      model: this.readConfiguredRequestModel(),
       temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_TEMPERATURE", "0")),
       topP: Number(this.readStringEnv("MANGA_TRANSLATOR_TOP_P", "0.85")),
+      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_TOP_K"),
       presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_PRESENCE_PENALTY", "0")),
       frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_FREQUENCY_PENALTY", "0")),
+      reasoningBudget: this.readReasoningBudgetEnv("MANGA_TRANSLATOR_REASONING_BUDGET", translationThinkingEnabled),
+      enableThinking: translationThinkingEnabled,
       maxTokens,
       stop: stopSequences,
       messages: [
@@ -648,7 +1276,31 @@ export class LlamaManager {
       ]
     });
 
-    const rawPayload = extractPayloadFromResponse(response);
+    let rawPayload: string;
+    try {
+      rawPayload = extractPayloadFromResponse(response);
+    } catch (error) {
+      if (!isRecoverableModelOutputError(error)) {
+        throw error;
+      }
+      logWarn("Gemma translation batch produced unusable output; treating as omitted for retry", {
+        mode,
+        batchIndex: batch.chunkIndex,
+        blockCount: batch.items.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "batch_issue",
+        jobId: this.options.jobId,
+        batchMode: mode,
+        chunkIndex: batch.chunkIndex,
+        issueCode: "empty_response",
+        detail: error instanceof Error ? error.message : String(error),
+        requestedBlockIds: batch.items.map((item) => item.blockId)
+      });
+      return { items: {} };
+    }
     const finishReason = typeof response.choices?.[0]?.finish_reason === "string"
       ? response.choices[0].finish_reason
       : null;
@@ -676,10 +1328,24 @@ export class LlamaManager {
       stopSequences
     });
 
-    const parsed = this.parseTranslationResponse(rawPayload, batch, mode, {
-      finishReason,
-      stopSequences
-    });
+    let parsed: RawGemmaTranslationBatch;
+    try {
+      parsed = this.parseTranslationResponse(rawPayload, batch, mode, {
+        finishReason,
+        stopSequences
+      });
+    } catch (error) {
+      if (!isRecoverableModelOutputError(error)) {
+        throw error;
+      }
+      logWarn("Gemma translation batch parse failed; treating batch as omitted for retry", {
+        mode,
+        batchIndex: batch.chunkIndex,
+        blockCount: batch.items.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return { items: {} };
+    }
     return normalizeTranslationBatchResponse({
       parsed,
       batch: modelBatch,
@@ -709,14 +1375,36 @@ export class LlamaManager {
     }
 
     this.writeMissingBlockTrace(batch, "initial", missingBlockIds, `Retrying ${missingBlockIds.length} omitted/rejected block ids`);
-    logWarn("Retrying omitted/rejected Gemma block ids individually", {
+    logWarn("Retrying omitted/rejected Gemma block ids in smaller batches", {
       chunkIndex: batch.chunkIndex,
       count: missingBlockIds.length,
       sample: this.describeMissingItems(batch, missingBlockIds)
     });
 
     const retryItems = this.buildRetryItems(batch, missingBlockIds);
-    for (const retryItem of retryItems) {
+    const retryGroupSize = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_RETRY_GROUP_SIZE", "4")));
+    const groupedRetryBatches = retryItems.length > 1 ? this.buildRetryBatches(batch, retryItems, retryGroupSize) : [];
+
+    for (const retryBatch of groupedRetryBatches) {
+      const groupedTranslated = await this.translateBatch(retryBatch, retryBatch.items.length === 1 ? "single" : "group");
+      nextPages = applyTranslationBatchToPages(nextPages, groupedTranslated.items ?? []);
+    }
+
+    missingBlockIds = findUntranslatedBlockIds(
+      nextPages,
+      batch.items.map((item) => item.blockId)
+    );
+
+    if (missingBlockIds.length > 0) {
+      logWarn("Retrying remaining omitted/rejected Gemma block ids individually", {
+        chunkIndex: batch.chunkIndex,
+        count: missingBlockIds.length,
+        sample: this.describeMissingItems(batch, missingBlockIds)
+      });
+    }
+
+    const singleRetryItems = this.buildRetryItems(batch, missingBlockIds);
+    for (const retryItem of singleRetryItems) {
       const singleBatch: DocumentTranslationBatch = {
         ...batch,
         items: [retryItem]
@@ -741,6 +1429,22 @@ export class LlamaManager {
     }
 
     return nextPages;
+  }
+
+  private buildRetryBatches(
+    batch: DocumentTranslationBatch,
+    items: DocumentTranslationBatchItem[],
+    maxItems: number
+  ): DocumentTranslationBatch[] {
+    const chunkSize = Math.max(1, maxItems);
+    const batches: DocumentTranslationBatch[] = [];
+    for (let index = 0; index < items.length; index += chunkSize) {
+      batches.push({
+        ...batch,
+        items: items.slice(index, index + chunkSize)
+      });
+    }
+    return batches;
   }
 
   private buildRetryItems(batch: DocumentTranslationBatch, blockIds: string[]): DocumentTranslationBatchItem[] {
@@ -1016,6 +1720,7 @@ export class LlamaManager {
     }
   ): RawGemmaTranslationBatch {
     const malformedModelIds = new Set<string>();
+    const normalizedPayload = normalizeProtocolPayload(rawPayload);
     try {
       const parsed = parseTranslationPayload(rawPayload, {
         onIssue: (issue) => {
@@ -1053,7 +1758,9 @@ export class LlamaManager {
           sourcePreview: summarizeSource(item.ocrRawText ?? item.sourceText)
         })),
         preview: rawPayload.slice(0, 400),
-        tail: rawPayload.slice(-400)
+        tail: rawPayload.slice(-400),
+        normalizedPreview: normalizedPayload.slice(0, 400),
+        normalizedTail: normalizedPayload.slice(-400)
       });
       throw error;
     }
@@ -1216,15 +1923,25 @@ export class LlamaManager {
     );
 
     const stopSequences = this.buildStopSequences();
+    const polishThinkingEnabled = this.readBooleanEnv(
+      "MANGA_TRANSLATOR_POLISH_ENABLE_THINKING",
+      this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING")
+    );
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
       signal: this.options.signal,
-      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      model: this.readConfiguredRequestModel(),
       temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_TEMPERATURE", this.readStringEnv("MANGA_TRANSLATOR_TEMPERATURE", "0"))),
       topP: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_TOP_P", this.readStringEnv("MANGA_TRANSLATOR_TOP_P", "0.85"))),
+      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_POLISH_TOP_K", this.readStringEnv("MANGA_TRANSLATOR_TOP_K")),
       presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_PRESENCE_PENALTY", this.readStringEnv("MANGA_TRANSLATOR_PRESENCE_PENALTY", "0"))),
       frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_FREQUENCY_PENALTY", this.readStringEnv("MANGA_TRANSLATOR_FREQUENCY_PENALTY", "0"))),
+      reasoningBudget: this.readReasoningBudgetEnv(
+        "MANGA_TRANSLATOR_POLISH_REASONING_BUDGET",
+        polishThinkingEnabled
+      ),
+      enableThinking: polishThinkingEnabled,
       maxTokens: outputReserve,
       stop: stopSequences,
       messages: [
@@ -1511,10 +2228,22 @@ export class LlamaManager {
   }
 
   private buildLaunchArgs(): string[] {
+    const pipelineMode = this.readPipelineMode();
     const ggufPath = this.readStringEnv("MANGA_TRANSLATOR_GGUF_PATH");
     const hfModel = this.readStringEnv("MANGA_TRANSLATOR_MODEL_HF", DEFAULT_MODEL_HF);
     const port = this.readStringEnv("MANGA_TRANSLATOR_LLAMA_PORT", DEFAULT_PORT);
     const extraArgs = tokenizeArgs(this.readStringEnv("MANGA_TRANSLATOR_LLAMA_EXTRA_ARGS"));
+    const thinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING");
+    const reasoningBudget = this.readReasoningBudgetEnv("MANGA_TRANSLATOR_REASONING_BUDGET", thinkingEnabled);
+    const reasoningFormat = this.readStringEnv(
+      "MANGA_TRANSLATOR_REASONING_FORMAT",
+      pipelineMode === "bubble_collage" ? "none" : ""
+    );
+    const reasoningBudgetMessage = this.readStringEnv("MANGA_TRANSLATOR_REASONING_BUDGET_MESSAGE");
+    const chatTemplateKwargs = this.readStringEnv("MANGA_TRANSLATOR_CHAT_TEMPLATE_KWARGS");
+    const skipChatParsing = this.readBooleanEnv("MANGA_TRANSLATOR_SKIP_CHAT_PARSING", pipelineMode === "bubble_collage");
+    const imageMinTokens = this.readStringEnv("MANGA_TRANSLATOR_IMAGE_MIN_TOKENS", pipelineMode === "bubble_collage" ? "512" : "");
+    const imageMaxTokens = this.readStringEnv("MANGA_TRANSLATOR_IMAGE_MAX_TOKENS", pipelineMode === "bubble_collage" ? "512" : "");
 
     const args: string[] = [];
     if (ggufPath) {
@@ -1549,9 +2278,9 @@ export class LlamaManager {
       "-fa",
       "on",
       "-rea",
-      "off",
+      thinkingEnabled ? "on" : "off",
       "--reasoning-budget",
-      "0",
+      String(reasoningBudget),
       "-c",
       this.readStringEnv("MANGA_TRANSLATOR_CTX", "32768"),
       "-b",
@@ -1562,9 +2291,29 @@ export class LlamaManager {
       "1",
       "--no-cache-prompt",
       "--cache-ram",
-      "0",
-      ...extraArgs
+      "0"
     );
+
+    if (reasoningFormat) {
+      args.push("--reasoning-format", reasoningFormat);
+    }
+    if (reasoningBudgetMessage) {
+      args.push("--reasoning-budget-message", reasoningBudgetMessage);
+    }
+    if (chatTemplateKwargs) {
+      args.push("--chat-template-kwargs", chatTemplateKwargs);
+    }
+    if (skipChatParsing) {
+      args.push("--skip-chat-parsing");
+    }
+    if (imageMinTokens) {
+      args.push("--image-min-tokens", imageMinTokens);
+    }
+    if (imageMaxTokens) {
+      args.push("--image-max-tokens", imageMaxTokens);
+    }
+
+    args.push(...extraArgs);
 
     return args;
   }
@@ -1812,6 +2561,43 @@ export class LlamaManager {
     };
   }
 
+  private readPipelineMode(): "bubble_collage" | "legacy" {
+    return this.readStringEnv("MANGA_TRANSLATOR_PIPELINE", "bubble_collage").trim().toLowerCase() === "legacy"
+      ? "legacy"
+      : "bubble_collage";
+  }
+
+  private readGlossaryLimit(): number {
+    const fallback = this.readPipelineMode() === "bubble_collage" ? "64" : "0";
+    return Math.max(0, Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_LIMIT", fallback)));
+  }
+
+  private readConfiguredRequestModel(): string {
+    return this.readStringEnv(
+      "MANGA_TRANSLATOR_MODEL",
+      this.readStringEnv("MANGA_TRANSLATOR_MODEL_HF", DEFAULT_MODEL_HF)
+    );
+  }
+
+  private readBooleanEnv(name: string, fallback = false): boolean {
+    return this.readStringEnv(name, fallback ? "1" : "0") === "1";
+  }
+
+  private readOptionalNumberEnv(name: string, fallback = ""): number | undefined {
+    const raw = this.readStringEnv(name, fallback);
+    if (!raw) {
+      return undefined;
+    }
+
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  private readReasoningBudgetEnv(name: string, thinkingEnabled: boolean): number {
+    const fallback = thinkingEnabled ? "1024" : "0";
+    return Number(this.readStringEnv(name, fallback));
+  }
+
   private readStringEnv(name: string, fallback = ""): string {
     const value = process.env[name];
     return value && value.trim() ? value.trim() : fallback;
@@ -2017,6 +2803,102 @@ function resizeCropForVision(
     height: Math.max(1, Math.round(size.height * scale)),
     quality: "best"
   });
+}
+
+function blitBitmap(
+  destination: Buffer,
+  destinationWidth: number,
+  source: Buffer,
+  sourceWidth: number,
+  sourceHeight: number,
+  offsetX: number,
+  offsetY: number
+): void {
+  const sourceStride = sourceWidth * 4;
+  const destinationStride = destinationWidth * 4;
+  for (let row = 0; row < sourceHeight; row += 1) {
+    const sourceStart = row * sourceStride;
+    const destinationStart = (offsetY + row) * destinationStride + offsetX * 4;
+    source.copy(destination, destinationStart, sourceStart, sourceStart + sourceStride);
+  }
+}
+
+function normalizeBubbleOcrText(text: string): string {
+  return text
+    .replace(/\\n/gu, " ")
+    .replace(/\r?\n+/gu, " ")
+    .replace(/^["'`]+|["'`]+$/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function isInvalidBubbleOcrText(text: string): boolean {
+  if (!text) {
+    return true;
+  }
+  if (/[가-힣]/u.test(text)) {
+    return true;
+  }
+  if (/^(?:sorry|unable|cannot|can't|i cannot|i can't)/iu.test(text)) {
+    return true;
+  }
+  if (/[A-Za-z]{4,}/u.test(text) && !/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(text)) {
+    return true;
+  }
+  if (/(?:translation|bubble|image|japanese|output|id\s*:)/iu.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function parseGlossaryLines(rawPayload: string): Array<{ sourceText: string; translatedText: string }> {
+  const entries = new Map<string, string>();
+  const lines = normalizeProtocolPayload(rawPayload)
+    .split("\n")
+    .map((line) => normalizeProtocolLine(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(/^(?:[-*]\s*)?(.+?)\s*(?:\t+|<tab>|[:：])\s*(.+)$/u);
+    if (!match) {
+      continue;
+    }
+    const sourceText = normalizeBubbleOcrText(match[1]);
+    const translatedText = normalizeModelTranslationText(match[2]);
+    if (!sourceText || !translatedText) {
+      continue;
+    }
+    if (sourceText.length > 40 || translatedText.length > 60) {
+      continue;
+    }
+    if (!/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(sourceText)) {
+      continue;
+    }
+    if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(translatedText)) {
+      continue;
+    }
+    entries.set(sourceText, translatedText);
+  }
+
+  return [...entries.entries()].map(([sourceText, translatedText]) => ({ sourceText, translatedText }));
+}
+
+function glossaryEntryScore(entry: { sourceText: string; translatedText: string }): number {
+  return (
+    entry.sourceText.length +
+    entry.translatedText.length +
+    (/\s/u.test(entry.sourceText) ? 8 : 0) +
+    (/\s/u.test(entry.translatedText) ? 4 : 0)
+  );
+}
+
+function isRecoverableModelOutputError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /empty response|valid json/i.test(message);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 function tokenizeArgs(input: string): string[] {

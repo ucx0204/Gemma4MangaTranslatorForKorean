@@ -24,8 +24,11 @@ type ChatCompletionRequest = {
   stop: string[];
   temperature: number;
   topP: number;
+  topK?: number;
   presencePenalty: number;
   frequencyPenalty: number;
+  reasoningBudget?: number;
+  enableThinking?: boolean;
 };
 
 export async function postChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -40,11 +43,12 @@ export async function postChatCompletion(request: ChatCompletionRequest): Promis
       model: request.model,
       temperature: request.temperature,
       top_p: request.topP,
+      ...(typeof request.topK === "number" && Number.isFinite(request.topK) ? { top_k: request.topK } : {}),
       presence_penalty: request.presencePenalty,
       frequency_penalty: request.frequencyPenalty,
       max_tokens: request.maxTokens,
-      reasoning_budget: 0,
-      enable_thinking: false,
+      reasoning_budget: request.reasoningBudget ?? 0,
+      enable_thinking: request.enableThinking ?? false,
       ...(request.stop.length > 0 ? { stop: request.stop } : {}),
       messages: request.messages
     })

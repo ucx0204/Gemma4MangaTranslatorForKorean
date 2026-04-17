@@ -10,6 +10,7 @@ import { LlamaManager } from "./llamaManager";
 import { InpaintManager } from "./inpaintManager";
 import { getLogPath, logError, logInfo, logWarn, writeLog } from "./logger";
 import { normalizeLoadedProject } from "./project";
+import { bubbleRegionsToTranslationBlocks } from "../shared/bubblePipeline";
 import { buildOcrBlockCandidates, getOcrCandidateRejectionReason, ocrCandidatesToTranslationBlocks } from "../shared/ocr";
 import type { JobEvent, MangaPage, MangaProject, OcrBlockCandidate, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
@@ -264,84 +265,124 @@ function registerIpc(): void {
       const detectionResult = await detector.run(request.pages);
       await detector.cancel();
       activeJob.cleanup = undefined;
+      const pipelineMode = readPipelineMode();
+      const warnings: string[] = [...detectionResult.warnings];
+      let ocrPages: MangaPage[];
 
-      const glmocr = new GlmOcrManager({ jobId: id, emit, signal: abortController.signal });
-      activeJob.cleanup = () => glmocr.cancel();
-      const ocrResult = await glmocr.run(request.pages);
-      await glmocr.cancel();
-      activeJob.cleanup = undefined;
+      if (pipelineMode === "bubble_collage") {
+        for (const warning of warnings) {
+          logWarn("Detection warning", { jobId: id, warning });
+        }
 
-      const warnings: string[] = [...detectionResult.warnings, ...ocrResult.warnings];
-      for (const warning of warnings) {
-        logWarn("Detection/OCR warning", { jobId: id, warning });
-      }
+        ocrPages = request.pages.map((page) => {
+          const detections = detectionResult.pages.find((candidate) => candidate.id === page.id);
+          const bubbleRegions = detections?.bubbleRegions ?? [];
+          const blocks = bubbleRegionsToTranslationBlocks(page, bubbleRegions);
+          logInfo("Bubble-only block candidates built", {
+            jobId: id,
+            pageId: page.id,
+            pageName: page.name,
+            bubbleCount: bubbleRegions.length,
+            blockCount: blocks.length,
+            blocks: blocks.slice(0, 8).map((block) => ({
+              blockId: block.id,
+              readingOrder: block.readingOrder ?? null,
+              bubbleId: block.bubbleId ?? null
+            }))
+          });
+          emit({
+            id,
+            kind: "gemma-analysis",
+            status: "running",
+            progressText: `${page.name} 말풍선 정리 중`,
+            detail: `detector bubble ${bubbleRegions.length}개 -> block ${blocks.length}개`
+          });
+          return {
+            ...page,
+            blocks,
+            cleanLayerDataUrl: null,
+            inpaintApplied: false
+          };
+        });
+      } else {
+        const glmocr = new GlmOcrManager({ jobId: id, emit, signal: abortController.signal });
+        activeJob.cleanup = () => glmocr.cancel();
+        const ocrResult = await glmocr.run(request.pages);
+        await glmocr.cancel();
+        activeJob.cleanup = undefined;
 
-      const pageCandidates: Array<{ page: StartAnalysisRequest["pages"][number]; candidates: OcrBlockCandidate[] }> = [];
-      for (const page of request.pages) {
-        abortController.signal.throwIfAborted();
-        const spans = ocrResult.pages.find((candidate) => candidate.id === page.id)?.spans ?? [];
-        const detections = detectionResult.pages.find((candidate) => candidate.id === page.id);
-        logInfo("GLM-OCR spans ready", { jobId: id, pageId: page.id, spanCount: spans.length });
-        const candidates = buildOcrBlockCandidates(page.id, spans, { width: page.width, height: page.height }, detections);
-        const acceptedCandidates: OcrBlockCandidate[] = [];
-        let rejectedCount = 0;
-        for (const candidate of candidates) {
-          const rejectionReason = getOcrCandidateRejectionReason(candidate);
-          if (rejectionReason) {
-            rejectedCount += 1;
-            warnings.push(`[ocr_rejected] ${page.name} ${candidate.blockId} (${candidate.sourceText.slice(0, 40)}) 는 ${rejectionReason} 로 제외했습니다.`);
-            logWarn("Rejected OCR block candidate", {
-              jobId: id,
-              pageId: page.id,
-              pageName: page.name,
+        warnings.push(...ocrResult.warnings);
+        for (const warning of warnings) {
+          logWarn("Detection/OCR warning", { jobId: id, warning });
+        }
+
+        const pageCandidates: Array<{ page: StartAnalysisRequest["pages"][number]; candidates: OcrBlockCandidate[] }> = [];
+        for (const page of request.pages) {
+          abortController.signal.throwIfAborted();
+          const spans = ocrResult.pages.find((candidate) => candidate.id === page.id)?.spans ?? [];
+          const detections = detectionResult.pages.find((candidate) => candidate.id === page.id);
+          logInfo("GLM-OCR spans ready", { jobId: id, pageId: page.id, spanCount: spans.length });
+          const candidates = buildOcrBlockCandidates(page.id, spans, { width: page.width, height: page.height }, detections);
+          const acceptedCandidates: OcrBlockCandidate[] = [];
+          let rejectedCount = 0;
+          for (const candidate of candidates) {
+            const rejectionReason = getOcrCandidateRejectionReason(candidate);
+            if (rejectionReason) {
+              rejectedCount += 1;
+              warnings.push(`[ocr_rejected] ${page.name} ${candidate.blockId} (${candidate.sourceText.slice(0, 40)}) 는 ${rejectionReason} 로 제외했습니다.`);
+              logWarn("Rejected OCR block candidate", {
+                jobId: id,
+                pageId: page.id,
+                pageName: page.name,
+                blockId: candidate.blockId,
+                reason: rejectionReason,
+                confidence: Number(candidate.confidence.toFixed(3)),
+                spanCount: candidate.sourceSpanIds.length,
+                sourcePreview: summarizePreview(candidate.sourceText),
+                rawPreview: summarizePreview(candidate.ocrRawText ?? "")
+              });
+              continue;
+            }
+            acceptedCandidates.push(candidate);
+          }
+
+          logInfo("OCR block candidates built", {
+            jobId: id,
+            pageId: page.id,
+            candidateCount: acceptedCandidates.length,
+            rejectedCount,
+            blocks: acceptedCandidates.slice(0, 8).map((candidate) => ({
               blockId: candidate.blockId,
-              reason: rejectionReason,
               confidence: Number(candidate.confidence.toFixed(3)),
               spanCount: candidate.sourceSpanIds.length,
               sourcePreview: summarizePreview(candidate.sourceText),
               rawPreview: summarizePreview(candidate.ocrRawText ?? "")
-            });
-            continue;
+            }))
+          });
+          emit({
+            id,
+            kind: "gemma-analysis",
+            status: "running",
+            progressText: `${page.name} OCR 정리 중`,
+            detail: `span ${spans.length}개, block ${acceptedCandidates.length}개, 제외 ${rejectedCount}개`
+          });
+
+          if (acceptedCandidates.length === 0) {
+            const warning = `${page.name}: GLM-OCR 결과에서 유효한 텍스트 블록을 만들지 못했습니다.`;
+            warnings.push(warning);
+            logWarn("No OCR block candidates generated", { jobId: id, pageId: page.id });
           }
-          acceptedCandidates.push(candidate);
+
+          pageCandidates.push({ page, candidates: acceptedCandidates });
         }
 
-        logInfo("OCR block candidates built", {
-          jobId: id,
-          pageId: page.id,
-          candidateCount: acceptedCandidates.length,
-          rejectedCount,
-          blocks: acceptedCandidates.slice(0, 8).map((candidate) => ({
-            blockId: candidate.blockId,
-            confidence: Number(candidate.confidence.toFixed(3)),
-            spanCount: candidate.sourceSpanIds.length,
-            sourcePreview: summarizePreview(candidate.sourceText),
-            rawPreview: summarizePreview(candidate.ocrRawText ?? "")
-          }))
-        });
-        emit({
-          id,
-          kind: "gemma-analysis",
-          status: "running",
-          progressText: `${page.name} OCR 정리 중`,
-          detail: `span ${spans.length}개, block ${acceptedCandidates.length}개, 제외 ${rejectedCount}개`
-        });
-
-        if (acceptedCandidates.length === 0) {
-          const warning = `${page.name}: GLM-OCR 결과에서 유효한 텍스트 블록을 만들지 못했습니다.`;
-          warnings.push(warning);
-          logWarn("No OCR block candidates generated", { jobId: id, pageId: page.id });
-        }
-
-        pageCandidates.push({ page, candidates: acceptedCandidates });
+        ocrPages = pageCandidates.map(({ page, candidates }) => ({
+          ...page,
+          blocks: ocrCandidatesToTranslationBlocks(page, candidates),
+          cleanLayerDataUrl: null,
+          inpaintApplied: false
+        }));
       }
-
-      const ocrPages: MangaPage[] = pageCandidates.map(({ page, candidates }) => ({
-        ...page,
-        blocks: ocrCandidatesToTranslationBlocks(page, candidates),
-        cleanLayerDataUrl: null,
-        inpaintApplied: false
-      }));
 
       const llama = new LlamaManager({ jobId: id, emit, signal: abortController.signal });
       activeJob.cleanup = () => llama.shutdown();
@@ -414,6 +455,11 @@ function registerIpc(): void {
     await job.cleanup?.();
     return { cancelled: true };
   });
+}
+
+function readPipelineMode(): "bubble_collage" | "legacy" {
+  const value = process.env.MANGA_TRANSLATOR_PIPELINE;
+  return value && value.trim().toLowerCase() === "legacy" ? "legacy" : "bubble_collage";
 }
 
 async function imagePathToPage(filePath: string): Promise<MangaPage> {

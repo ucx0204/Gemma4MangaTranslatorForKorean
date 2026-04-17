@@ -1,5 +1,6 @@
 import { parseJsonPayload } from "../../shared/json";
 import type { RawGemmaTranslationBatch } from "../../shared/types";
+import { normalizeProtocolLine, normalizeProtocolPayload } from "./protocolCleanup";
 
 export type TranslationPayloadIssue = {
   code: "literal_tab_placeholder" | "malformed_id_line";
@@ -28,8 +29,9 @@ function parseTabbedTranslationPayload(
   }
 ): RawGemmaTranslationBatch | null {
   const idPattern = "([a-z]\\d{1,8})";
-  const idSeparatorPattern = "(<tab>|\\t+|[:：]\\s*|\\s+)";
-  const lines = rawPayload.replace(/\r/g, "").split("\n");
+  const idSeparatorPattern = "(<tab>|\\t+|[:：]\\s*|\\|\\s*|-\\s+|\\s+)";
+  const normalizedPayload = normalizeProtocolPayload(rawPayload);
+  const lines = normalizedPayload.split("\n");
   const items = new Map<string, string>();
   let currentId = "";
   let currentParts: string[] = [];
@@ -52,7 +54,7 @@ function parseTabbedTranslationPayload(
   };
 
   for (const [lineIndex, rawLine] of lines.entries()) {
-    const line = rawLine.trim();
+    const line = normalizeProtocolLine(rawLine);
     if (!line) {
       continue;
     }
@@ -90,8 +92,6 @@ function parseTabbedTranslationPayload(
     const malformedIdMatch = line.match(new RegExp(`^(?:[-*]\\s*)?${idPattern}(\\S.*)?$`, "i"));
     if (malformedIdMatch) {
       sawProtocolLikeLine = true;
-      const malformedTail = String(malformedIdMatch[2] ?? "");
-      const hyphenatedRangePattern = new RegExp(`^-\\s*(?:${idPattern}|\\d{1,8})(?:\\s*(?:<tab>|\\t+|[:：]|\\b)|$)`, "i");
       options?.onIssue?.({
         code: "malformed_id_line",
         lineNumber: lineIndex + 1,
@@ -99,11 +99,19 @@ function parseTabbedTranslationPayload(
         blockId: malformedIdMatch[1].trim()
       });
       flush();
-      if (hyphenatedRangePattern.test(malformedTail)) {
-        continue;
-      }
-      currentId = malformedIdMatch[1].trim();
-      currentParts = [malformedTail.replace(/^[-:：]+/, "").trim()];
+      continue;
+    }
+
+    const strayIdMatch = line.match(new RegExp(`\\b${idPattern}\\s*(?:<tab>|\\t+|[:：]|\\||-)`, "i"));
+    if (strayIdMatch) {
+      sawProtocolLikeLine = true;
+      options?.onIssue?.({
+        code: "malformed_id_line",
+        lineNumber: lineIndex + 1,
+        line,
+        blockId: strayIdMatch[1].trim()
+      });
+      flush();
       continue;
     }
 
