@@ -2,6 +2,10 @@ export function normalizeProtocolPayload(rawPayload: string): string {
   return rawPayload
     .replace(/\r/g, "")
     .replace(/<think>[\s\S]*?<\/think>/giu, "\n")
+    .replace(/<\|turn\|?>\s*(?:user|model|assistant|system)?/giu, "\n")
+    .replace(/<turn\|>/giu, "\n")
+    .replace(/<start_of_turn>\s*(?:user|model|assistant|system)?/giu, "\n")
+    .replace(/<end_of_turn>/giu, "\n")
     .replace(/<\|start_header_id\|>assistant<\|end_header_id\|>/giu, "\n")
     .replace(/<\|eot_id\|>/giu, "\n")
     .replace(/<\|?channel\|?>\s*\|?\s*(?:thought|analysis|final)?/giu, "\n")

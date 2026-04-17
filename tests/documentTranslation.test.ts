@@ -421,6 +421,17 @@ describe("document translation batching", () => {
     expect(getSuspiciousTranslationReason("ありがとうおかげで答えは出たわ", "ありがとう、おかげで答えは出たわ")).toBe("contains-japanese-script");
   });
 
+  it("allows symbol-only manga reactions to pass through unchanged", () => {
+    expect(getSuspiciousTranslationReason("…？", "…?")).toBeNull();
+    expect(getSuspiciousTranslationReason("・・・・", "····")).toBeNull();
+  });
+
+  it("flags obvious semantic drift when a question turns into an imperative", () => {
+    expect(
+      getSuspiciousTranslationReason("ここでは誰に聞かれているか分かりません", "그럼 여기서부터 시작하자!")
+    ).toBe("semantic-drift");
+  });
+
   it("sanitizes OCR input conservatively without deleting kana lines", () => {
     expect(
       sanitizeOcrModelSource("上位種が\n\nせんめつ\n\n全減したのは\n\nしかた\n仕方ありません\n…ですが\n\nシリウス司教\n\nしあう", "せんめつしかたしあう")

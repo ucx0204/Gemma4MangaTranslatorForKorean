@@ -152,6 +152,13 @@ describe("parseTranslationPayload", () => {
     });
   });
 
+  it("strips Gemma turn markers before parsing translation lines", () => {
+    const parsed = parseTranslationPayload("<|turn|>model\n<turn|>\nb1\t여긴 내가 맡을게");
+    expect(parsed.items).toEqual({
+      b1: "여긴 내가 맡을게"
+    });
+  });
+
   it("treats a bare id-only line as an empty protocol response instead of throwing", () => {
     const issues: TranslationPayloadIssue[] = [];
     const parsed = parseTranslationPayload("g8", {

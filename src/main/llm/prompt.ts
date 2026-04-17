@@ -32,6 +32,9 @@ export function formatModeLabel(mode: TranslationMode): string {
 
 function buildDocumentTranslationPrompt(mode: TranslationMode): string {
   const variant = readTranslationPromptVariant();
+  if (variant === "legacy") {
+    return buildLegacyTranslationPrompt(mode);
+  }
   if (variant === "strict_v3") {
     return buildExampleDrivenTranslationPrompt(mode);
   }
@@ -39,7 +42,7 @@ function buildDocumentTranslationPrompt(mode: TranslationMode): string {
     return buildStrictTranslationPrompt(mode);
   }
 
-  return buildLegacyTranslationPrompt(mode);
+  return buildStructuredTranslationPrompt(mode);
 }
 
 function buildLegacyTranslationPrompt(mode: TranslationMode): string {
@@ -177,7 +180,35 @@ function buildExampleDrivenTranslationPrompt(mode: TranslationMode): string {
   ].join("\n");
 }
 
+function buildStructuredTranslationPrompt(mode: TranslationMode): string {
+  return [
+    "Translate Japanese manga text into natural Korean manga dialogue.",
+    "Fill the JSON schema only.",
+    "",
+    "Read:",
+    "- items: only these ids are translatable.",
+    "- gl: established terms to keep consistent.",
+    "- ctx: nearby tone/speaker reference only.",
+    "- attached CROP images: verify glyphs for the same item only when OCR looks wrong.",
+    "",
+    "Rules:",
+    "- Translate each item independently. Never merge ids or move meaning across items.",
+    "- Translate only the current item's text. Never translate ctx directly.",
+    "- If the source is fragmentary, keep the Korean fragmentary too.",
+    "- Preserve names, ranks, numbers, uncertainty, and relationship terms literally.",
+    "- Katakana names must be transliterated into Korean.",
+    "- Use reading hints and crops only to repair OCR mistakes in the same item.",
+    "- Output Korean dialogue only. No explanations or meta text.",
+    "",
+    mode === "group"
+      ? "This is a context retry chunk. Fix only the weak lines."
+      : mode === "single"
+        ? "This is a single target chunk."
+        : "This is an initial chunk."
+  ].join("\n");
+}
+
 function readTranslationPromptVariant(): string {
   const value = process.env.MANGA_TRANSLATOR_TRANSLATION_PROMPT_VARIANT;
-  return value && value.trim() ? value.trim().toLowerCase() : "legacy";
+  return value && value.trim() ? value.trim().toLowerCase() : "structured_v1";
 }

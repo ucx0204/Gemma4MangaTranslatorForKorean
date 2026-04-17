@@ -43,6 +43,7 @@ import { buildPolishSystemPrompt, buildPolishUserMessage } from "./llm/polishPro
 import { buildDocumentTranslationSystemPrompt, buildDocumentTranslationUserMessage, progressTextForMode } from "./llm/prompt";
 import { normalizeProtocolLine, normalizeProtocolPayload } from "./llm/protocolCleanup";
 import { normalizeModelTranslationText, normalizeTranslationBatchResponse, type RejectedTranslation } from "./llm/responseNormalization";
+import { buildPolishResponseFormat, buildTranslationResponseFormat } from "./llm/structuredOutput";
 import {
   buildSourceCleanupPayload,
   buildSourceCleanupSystemPrompt,
@@ -393,18 +394,20 @@ export class LlamaManager {
       `${task.pageName} ${task.items.length}개 bubble, ${task.ocrAttempt}, prompt~${promptEstimate}tok`
     );
 
+    const bubbleOcrThinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_BUBBLE_OCR_ENABLE_THINKING", false);
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
       signal: this.options.signal,
       model: this.readConfiguredRequestModel(),
-      temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TEMPERATURE", "0.2")),
-      topP: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_P", "0.95")),
-      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_K", "64"),
+      temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TEMPERATURE", "0")),
+      topP: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_P", "0.85")),
+      topK: this.readOptionalNumberEnv("MANGA_TRANSLATOR_BUBBLE_OCR_TOP_K", "32"),
       presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_PRESENCE_PENALTY", "0")),
       frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_FREQUENCY_PENALTY", "0")),
-      reasoningBudget: Number(this.readStringEnv("MANGA_TRANSLATOR_BUBBLE_OCR_REASONING_BUDGET", "8192")),
-      enableThinking: this.readBooleanEnv("MANGA_TRANSLATOR_BUBBLE_OCR_ENABLE_THINKING", true),
+      reasoningBudget: this.readReasoningBudgetEnv("MANGA_TRANSLATOR_BUBBLE_OCR_REASONING_BUDGET", bubbleOcrThinkingEnabled),
+      enableThinking: bubbleOcrThinkingEnabled,
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(bubbleOcrThinkingEnabled),
       maxTokens: Math.max(256, Math.min(1024, task.items.length * 192)),
       stop: this.buildStopSequences(),
       messages: [
@@ -589,6 +592,7 @@ export class LlamaManager {
       presencePenalty: 0,
       frequencyPenalty: 0,
       maxTokens: Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_MAX_TOKENS", "512")),
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(false),
       stop: this.buildStopSequences(),
       messages: [
         {
@@ -862,6 +866,7 @@ export class LlamaManager {
       presencePenalty: 0,
       frequencyPenalty: 0,
       maxTokens: this.maxTokensForMode("triage"),
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(false),
       stop: this.buildStopSequences(),
       messages: [
         {
@@ -1012,6 +1017,7 @@ export class LlamaManager {
       presencePenalty: 0,
       frequencyPenalty: 0,
       maxTokens: this.maxTokensForMode("cleanup"),
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(false),
       stop: this.buildStopSequences(),
       messages: [
         {
@@ -1090,7 +1096,7 @@ export class LlamaManager {
       Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_STYLE_LIMIT", "16"))
     );
 
-    const defaultPolishMode = this.readPipelineMode() === "bubble_collage" ? "full" : "repair";
+    const defaultPolishMode = "repair";
     const polishMode = this.readStringEnv("MANGA_TRANSLATOR_POLISH_MODE", defaultPolishMode).trim().toLowerCase();
     if (polishMode !== "full") {
       return this.polishDocumentInRepairMode(nextPages, styleNotes, warnings);
@@ -1249,6 +1255,9 @@ export class LlamaManager {
       mode
     });
     const translationThinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING");
+    const responseFormat = buildTranslationResponseFormat(
+      modelBatch.items.map((item) => item.modelId ?? item.blockId)
+    );
 
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
@@ -1262,6 +1271,8 @@ export class LlamaManager {
       frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_FREQUENCY_PENALTY", "0")),
       reasoningBudget: this.readReasoningBudgetEnv("MANGA_TRANSLATOR_REASONING_BUDGET", translationThinkingEnabled),
       enableThinking: translationThinkingEnabled,
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(translationThinkingEnabled),
+      responseFormat,
       maxTokens,
       stop: stopSequences,
       messages: [
@@ -1825,8 +1836,8 @@ export class LlamaManager {
       return nextPages;
     }
 
-    const retryOverlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_ITEMS", "8"));
-    const retryOverlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_TOKENS", "800"));
+    const retryOverlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_ITEMS", "4"));
+    const retryOverlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_TOKENS", "400"));
 
     for (const modelId of unresolved) {
       this.options.signal.throwIfAborted();
@@ -1923,10 +1934,8 @@ export class LlamaManager {
     );
 
     const stopSequences = this.buildStopSequences();
-    const polishThinkingEnabled = this.readBooleanEnv(
-      "MANGA_TRANSLATOR_POLISH_ENABLE_THINKING",
-      this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING")
-    );
+    const polishThinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_POLISH_ENABLE_THINKING", false);
+    const responseFormat = buildPolishResponseFormat(batch.items.map((item) => item.modelId));
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
       baseUrl: this.baseUrl,
@@ -1942,6 +1951,8 @@ export class LlamaManager {
         polishThinkingEnabled
       ),
       enableThinking: polishThinkingEnabled,
+      chatTemplateKwargs: this.buildRequestChatTemplateKwargs(polishThinkingEnabled),
+      responseFormat,
       maxTokens: outputReserve,
       stop: stopSequences,
       messages: [
@@ -1956,7 +1967,30 @@ export class LlamaManager {
       ]
     });
 
-    const rawPayload = extractPayloadFromResponse(response);
+    let rawPayload: string;
+    try {
+      rawPayload = extractPayloadFromResponse(response);
+    } catch (error) {
+      if (!isRecoverableModelOutputError(error)) {
+        throw error;
+      }
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "batch_issue",
+        jobId: this.options.jobId,
+        batchMode: "polish",
+        chunkIndex: batch.chunkIndex,
+        issueCode: "empty_response",
+        detail: error instanceof Error ? error.message : String(error),
+        requestedBlockIds: batch.items.map((item) => item.blockId)
+      });
+      logWarn("Polish batch produced unusable output; keeping existing translations", {
+        chunkIndex: batch.chunkIndex,
+        targetCount: batch.items.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return { items: {} };
+    }
     const finishReason = typeof response.choices?.[0]?.finish_reason === "string"
       ? response.choices[0].finish_reason
       : null;
@@ -1996,8 +2030,8 @@ export class LlamaManager {
     styleNotes: string,
     chunkIndex: number
   ): Promise<PolishTranslationBatch> {
-    const overlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_ITEMS", "12"));
-    const overlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_TOKENS", "1200"));
+    const overlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_ITEMS", "4"));
+    const overlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_TOKENS", "400"));
     const maxTargetItems = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_MAX_TARGET_ITEMS", "40")));
     let lo = startIndex;
     let hi = Math.min(items.length - 1, startIndex + maxTargetItems - 1);
@@ -2195,7 +2229,7 @@ export class LlamaManager {
         preview: rawPayload.slice(0, 400),
         tail: rawPayload.slice(-400)
       });
-      throw error;
+      return { items: {} };
     }
   }
 
@@ -2235,13 +2269,13 @@ export class LlamaManager {
     const extraArgs = tokenizeArgs(this.readStringEnv("MANGA_TRANSLATOR_LLAMA_EXTRA_ARGS"));
     const thinkingEnabled = this.readBooleanEnv("MANGA_TRANSLATOR_ENABLE_THINKING");
     const reasoningBudget = this.readReasoningBudgetEnv("MANGA_TRANSLATOR_REASONING_BUDGET", thinkingEnabled);
-    const reasoningFormat = this.readStringEnv(
-      "MANGA_TRANSLATOR_REASONING_FORMAT",
-      pipelineMode === "bubble_collage" ? "none" : ""
-    );
+    const reasoningFormat = this.readStringEnv("MANGA_TRANSLATOR_REASONING_FORMAT");
     const reasoningBudgetMessage = this.readStringEnv("MANGA_TRANSLATOR_REASONING_BUDGET_MESSAGE");
-    const chatTemplateKwargs = this.readStringEnv("MANGA_TRANSLATOR_CHAT_TEMPLATE_KWARGS");
-    const skipChatParsing = this.readBooleanEnv("MANGA_TRANSLATOR_SKIP_CHAT_PARSING", pipelineMode === "bubble_collage");
+    const chatTemplateKwargs = this.readStringEnv(
+      "MANGA_TRANSLATOR_CHAT_TEMPLATE_KWARGS",
+      thinkingEnabled ? "" : "{\"enable_thinking\":false}"
+    );
+    const skipChatParsing = this.readBooleanEnv("MANGA_TRANSLATOR_SKIP_CHAT_PARSING", false);
     const imageMinTokens = this.readStringEnv("MANGA_TRANSLATOR_IMAGE_MIN_TOKENS", pipelineMode === "bubble_collage" ? "512" : "");
     const imageMaxTokens = this.readStringEnv("MANGA_TRANSLATOR_IMAGE_MAX_TOKENS", pipelineMode === "bubble_collage" ? "512" : "");
 
@@ -2260,7 +2294,7 @@ export class LlamaManager {
       "--repeat-last-n",
       this.readStringEnv("MANGA_TRANSLATOR_REPEAT_LAST_N", "256"),
       "--repeat-penalty",
-      this.readStringEnv("MANGA_TRANSLATOR_REPEAT_PENALTY", "1.12"),
+      this.readStringEnv("MANGA_TRANSLATOR_REPEAT_PENALTY", "1.0"),
       "--presence-penalty",
       this.readStringEnv("MANGA_TRANSLATOR_PRESENCE_PENALTY", "0"),
       "--frequency-penalty",
@@ -2321,12 +2355,30 @@ export class LlamaManager {
   private buildStopSequences(): string[] {
     const rawConfig = this.readStringEnv(
       "MANGA_TRANSLATOR_STOP_SEQUENCES",
-      "<end_of_turn>|<start_of_turn>user|<start_of_turn>model"
+      "[\"<|channel>\",\"<channel|>\",\"<|turn>\",\"<turn|>\",\"<end_of_turn>\",\"<start_of_turn>user\",\"<start_of_turn>model\"]"
     );
-    const parsed = rawConfig
-      .split("|")
-      .map((value) => value.trim())
-      .filter(Boolean);
+    const trimmed = rawConfig.trim();
+    let parsed: string[] = [];
+
+    if (trimmed.startsWith("[")) {
+      try {
+        const jsonParsed = JSON.parse(trimmed);
+        if (Array.isArray(jsonParsed)) {
+          parsed = jsonParsed.map((value) => String(value).trim()).filter(Boolean);
+        }
+      } catch (error) {
+        logWarn("Failed to parse stop sequence JSON config; falling back to legacy separators", {
+          rawConfig,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    if (parsed.length === 0) {
+      parsed = (trimmed.includes("\n") ? trimmed.split(/\r?\n/) : trimmed.split("|"))
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
 
     if (parsed.some((value) => value === "<" || value === ">" || value === "turn" || value === "<turn")) {
       logWarn("Stop sequence configuration looks malformed", {
@@ -2579,6 +2631,17 @@ export class LlamaManager {
     );
   }
 
+  private buildRequestChatTemplateKwargs(enableThinking: boolean): Record<string, unknown> {
+    const raw = this.readStringEnv(
+      "MANGA_TRANSLATOR_REQUEST_CHAT_TEMPLATE_KWARGS",
+      this.readStringEnv("MANGA_TRANSLATOR_CHAT_TEMPLATE_KWARGS")
+    );
+    return {
+      ...this.tryParseJsonObject(raw, "chat template kwargs"),
+      enable_thinking: enableThinking
+    };
+  }
+
   private readBooleanEnv(name: string, fallback = false): boolean {
     return this.readStringEnv(name, fallback ? "1" : "0") === "1";
   }
@@ -2601,6 +2664,26 @@ export class LlamaManager {
   private readStringEnv(name: string, fallback = ""): string {
     const value = process.env[name];
     return value && value.trim() ? value.trim() : fallback;
+  }
+
+  private tryParseJsonObject(raw: string, label: string): Record<string, unknown> {
+    if (!raw.trim()) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch (error) {
+      logWarn(`Ignoring invalid ${label} JSON`, {
+        raw,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return {};
   }
 }
 

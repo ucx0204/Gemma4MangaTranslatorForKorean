@@ -307,6 +307,9 @@ export function getSuspiciousTranslationReason(
   }
 
   if (normalizeForComparison(compactTranslated) === normalizeForComparison(compactSource)) {
+    if (isSafeSymbolEcho(signalSource, translatedText)) {
+      return null;
+    }
     return "source-copy";
   }
 
@@ -328,6 +331,10 @@ export function getSuspiciousTranslationReason(
 
   if (/(?:^|[\s"'`([{])g\d{1,8}(?=$|[\s"'`)\]}:,.!?-])/iu.test(translatedText) || /^g\d{1,8}/iu.test(translatedText)) {
     return "id-leak";
+  }
+
+  if (hasSemanticDrift(signalSource, translatedText)) {
+    return "semantic-drift";
   }
 
   if (hasAsciiRunaway(compactTranslated)) {
@@ -437,6 +444,25 @@ function normalizeForComparison(text: string): string {
   return text.replace(/[\s"'`~!@#$%^&*()\-_=+[\]{}\\|;:,<.>/?！？…・。、「」『』（）]/gu, "").toLowerCase();
 }
 
+function isSafeSymbolEcho(sourceText: string, translatedText: string): boolean {
+  const normalizeSymbols = (text: string) =>
+    text
+      .replace(/\s+/g, "")
+      .replace(/[.。‥]/gu, ".")
+      .replace(/[⋯…]/gu, "…")
+      .replace(/[・·]/gu, "·")
+      .replace(/[!！]/gu, "!")
+      .replace(/[?？]/gu, "?");
+  const isSymbolOnly = (text: string) => /^[.…·!?~〜ー\-"'`()（）「」『』【】\[\]<>]+$/u.test(normalizeSymbols(text));
+  const normalizedSource = normalizeSymbols(sourceText);
+  const normalizedTranslated = normalizeSymbols(translatedText);
+
+  return Boolean(normalizedSource)
+    && normalizedSource === normalizedTranslated
+    && isSymbolOnly(sourceText)
+    && isSymbolOnly(translatedText);
+}
+
 function hasArabicNumberMismatch(sourceText: string, translatedText: string): boolean {
   const sourceNumbers = extractDigitSequences(sourceText);
   if (sourceNumbers.length === 0) {
@@ -449,6 +475,23 @@ function hasArabicNumberMismatch(sourceText: string, translatedText: string): bo
   }
 
   return sourceNumbers.join("|") !== translatedNumbers.join("|");
+}
+
+function hasSemanticDrift(sourceText: string, translatedText: string): boolean {
+  const compactSource = sourceText.replace(/\s+/g, "");
+  const compactTranslated = translatedText.replace(/\s+/g, "");
+  if (!compactSource || !compactTranslated) {
+    return false;
+  }
+
+  const sourceHasQuestion = /[？?]|(?:誰|何|どこ|どう|なぜ|なんで|かい|かな|なのか|のか)/u.test(sourceText);
+  const sourceHasNegationOrUnknown = /(?:ない|なく|なかっ|ません|ぬ|ず|わから|分から|知らない|聞こえない|見えない|できない)/u.test(sourceText);
+  const translatedHasQuestionOrUncertainty = /[?？]|(?:뭐|누구|어디|왜|어떻|인가|이냐|이야|일까|을까|나요|겠|같|듯|모르|없|않|못)/u.test(translatedText);
+  const translatedHasImperative = /(?:하자|해라|하세요|해 봐|해봐|가자|가 봐|가봐|시작하자|말해줘|보자|오자|와라|해 줘|해줘)/u.test(translatedText);
+
+  return translatedHasImperative
+    && !translatedHasQuestionOrUncertainty
+    && (sourceHasQuestion || sourceHasNegationOrUnknown);
 }
 
 function extractDigitSequences(text: string): string[] {

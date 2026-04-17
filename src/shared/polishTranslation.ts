@@ -65,6 +65,7 @@ const SEVERE_REPAIR_REASONS = new Set([
   "number-mismatch",
   "prompt-leak",
   "cross-item-leak",
+  "semantic-drift",
   "schema-leak",
   "id-leak",
   "non-korean-leak",

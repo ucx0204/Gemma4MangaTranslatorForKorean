@@ -79,24 +79,25 @@ $env:MANGA_TRANSLATOR_REPAIR_MAX_TOKENS="384"
 $env:MANGA_TRANSLATOR_PROMPT_TOKEN_MARGIN="3072"
 $env:MANGA_TRANSLATOR_PROMPT_TOKEN_TARGET_RATIO="0.72"
 $env:MANGA_TRANSLATOR_REPEAT_LAST_N="256"
-$env:MANGA_TRANSLATOR_REPEAT_PENALTY="1.12"
-$env:MANGA_TRANSLATOR_PRESENCE_PENALTY="0.02"
-$env:MANGA_TRANSLATOR_FREQUENCY_PENALTY="0.12"
+$env:MANGA_TRANSLATOR_REPEAT_PENALTY="1.0"
+$env:MANGA_TRANSLATOR_PRESENCE_PENALTY="0"
+$env:MANGA_TRANSLATOR_FREQUENCY_PENALTY="0"
 $env:MANGA_TRANSLATOR_DRY_MULTIPLIER="1.0"
 $env:MANGA_TRANSLATOR_DRY_ALLOWED_LENGTH="2"
 $env:MANGA_TRANSLATOR_TOP_K="40"
-$env:MANGA_TRANSLATOR_TOP_P="0.9"
+$env:MANGA_TRANSLATOR_TOP_P="0.85"
 $env:MANGA_TRANSLATOR_ENABLE_THINKING="0"
 $env:MANGA_TRANSLATOR_REASONING_BUDGET="0"
 $env:MANGA_TRANSLATOR_PIPELINE="bubble_collage"
 $env:MANGA_TRANSLATOR_BUBBLE_COLLAGE_SIZE="4"
-$env:MANGA_TRANSLATOR_REASONING_FORMAT="none"
-$env:MANGA_TRANSLATOR_SKIP_CHAT_PARSING="1"
 $env:MANGA_TRANSLATOR_IMAGE_MIN_TOKENS="512"
 $env:MANGA_TRANSLATOR_IMAGE_MAX_TOKENS="512"
-$env:MANGA_TRANSLATOR_BUBBLE_OCR_ENABLE_THINKING="1"
-$env:MANGA_TRANSLATOR_BUBBLE_OCR_REASONING_BUDGET="8192"
-$env:MANGA_TRANSLATOR_STOP_SEQUENCES="<end_of_turn>|<start_of_turn>user|<start_of_turn>model"
+$env:MANGA_TRANSLATOR_TRANSLATION_PROMPT_VARIANT="structured_v1"
+$env:MANGA_TRANSLATOR_POLISH_MODE="repair"
+$env:MANGA_TRANSLATOR_POLISH_ENABLE_THINKING="0"
+$env:MANGA_TRANSLATOR_BUBBLE_OCR_ENABLE_THINKING="0"
+$env:MANGA_TRANSLATOR_BUBBLE_OCR_REASONING_BUDGET="0"
+$env:MANGA_TRANSLATOR_STOP_SEQUENCES='["<|channel>","<channel|>","<|turn>","<turn|>","<end_of_turn>","<start_of_turn>user","<start_of_turn>model"]'
 $env:MANGA_TRANSLATOR_ATTACH_BLOCK_CROPS="1"
 $env:MANGA_TRANSLATOR_MAX_BLOCK_CROPS="0"
 $env:MANGA_TRANSLATOR_BLOCK_CROP_PADDING_RATIO="0.22"
@@ -107,20 +108,19 @@ $env:MANGA_TRANSLATOR_BLOCK_CROP_MAX_SIDE_PX="1024"
 $env:MANGA_TRANSLATOR_ATTACH_PAGE_IMAGE="0"
 ```
 
-AI Studio-ish `supergemma` test setup with CUDA and thinking:
+Experimental `supergemma` setup for optional style experiments.
+Keep base instruct or specialist models on OCR / structured translation / polish if you need protocol stability:
 
 ```powershell
 $env:LLAMA_SERVER_PATH="$PWD\\tmp\\llama-b8808-cuda12\\llama-server.exe"
 $env:MANGA_TRANSLATOR_MODEL_HF="Jiunsong/supergemma4-26b-abliterated-multimodal-gguf-4bit:Q4_K_M"
 $env:MANGA_TRANSLATOR_MODEL="Jiunsong/supergemma4-26b-abliterated-multimodal-gguf-4bit:Q4_K_M"
-$env:MANGA_TRANSLATOR_TEMPERATURE="1.0"
-$env:MANGA_TRANSLATOR_TOP_P="0.95"
-$env:MANGA_TRANSLATOR_TOP_K="64"
-$env:MANGA_TRANSLATOR_ENABLE_THINKING="1"
-$env:MANGA_TRANSLATOR_REASONING_BUDGET="1024"
-$env:MANGA_TRANSLATOR_REASONING_FORMAT="none"
-$env:MANGA_TRANSLATOR_REASONING_BUDGET_MESSAGE="FINAL_ANSWER_ONLY."
-$env:MANGA_TRANSLATOR_SKIP_CHAT_PARSING="1"
+$env:MANGA_TRANSLATOR_TEMPERATURE="0"
+$env:MANGA_TRANSLATOR_TOP_P="0.85"
+$env:MANGA_TRANSLATOR_TOP_K="40"
+$env:MANGA_TRANSLATOR_ENABLE_THINKING="0"
+$env:MANGA_TRANSLATOR_REASONING_BUDGET="0"
+$env:MANGA_TRANSLATOR_POLISH_MODE="repair"
 $env:MANGA_TRANSLATOR_IMAGE_MIN_TOKENS="512"
 $env:MANGA_TRANSLATOR_IMAGE_MAX_TOKENS="512"
 ```
@@ -135,7 +135,7 @@ The default runtime path is now a bubble-only detector pipeline:
 4. Gemma reconstructs Japanese source text directly from those bubble images.
 5. the app builds a cumulative glossary over source chunks.
 6. Gemma translates cross-page bubble chunks by stable `blockId`.
-7. Gemma runs a Korean-only full polish pass before the renderer overlays the result.
+7. Gemma runs targeted Korean repair passes only on flagged lines before the renderer overlays the result.
 
 Pages with zero detected bubbles now pass through cleanly with `blocks=[]`. The v1 scope is speech bubbles only; captions, signs, SFX, and other free text are intentionally left out of the default path.
 

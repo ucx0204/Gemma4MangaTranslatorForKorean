@@ -29,6 +29,8 @@ type ChatCompletionRequest = {
   frequencyPenalty: number;
   reasoningBudget?: number;
   enableThinking?: boolean;
+  responseFormat?: unknown;
+  chatTemplateKwargs?: Record<string, unknown>;
 };
 
 export async function postChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -49,6 +51,8 @@ export async function postChatCompletion(request: ChatCompletionRequest): Promis
       max_tokens: request.maxTokens,
       reasoning_budget: request.reasoningBudget ?? 0,
       enable_thinking: request.enableThinking ?? false,
+      ...(request.chatTemplateKwargs ? { chat_template_kwargs: request.chatTemplateKwargs } : {}),
+      ...(request.responseFormat ? { response_format: request.responseFormat } : {}),
       ...(request.stop.length > 0 ? { stop: request.stop } : {}),
       messages: request.messages
     })
