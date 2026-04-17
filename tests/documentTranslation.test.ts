@@ -4,8 +4,10 @@ import {
   buildCompactGemmaPayload,
   buildDocumentTranslationBatches,
   chunkTranslationItems,
+  flattenDocumentTranslationItems,
   getSuspiciousTranslationReason,
   normalizeGemmaTranslationItems,
+  selectModelSource,
   sanitizeOcrModelSource
 } from "../src/shared/documentTranslation";
 import type { MangaPage, RawGemmaTranslationBatch } from "../src/shared/types";
@@ -228,6 +230,23 @@ describe("document translation batching", () => {
     expect(payload).not.toContain('"id":"page-a-block-001"');
   });
 
+  it("prefers cleanSourceText over raw OCR for model input", () => {
+    const items = flattenDocumentTranslationItems([
+      {
+        ...pageA,
+        blocks: [
+          {
+            ...pageA.blocks[0],
+            cleanSourceText: "本当にそうなのか？"
+          }
+        ]
+      }
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(selectModelSource(items[0])).toBe("本当にそうなのか？");
+  });
+
   it("maps Gemma translation items back by blockId", () => {
     const raw: RawGemmaTranslationBatch = {
       items: [
@@ -385,11 +404,17 @@ describe("document translation batching", () => {
   it("rejects prompt or cross-item leaks that include other ids or raw protocol text", () => {
     expect(getSuspiciousTranslationReason("戻りました", "b2:\"시리우스 주교님이 본부까지 철수하셨습니다.\"")).toBe("cross-item-leak");
     expect(getSuspiciousTranslationReason("戻りました", "```json{\"items\":{\"b1\":\"다녀왔습니다\"}}")).toBe("prompt-leak");
+    expect(getSuspiciousTranslationReason("友人だもの", "g8 우린 친구니까")).toBe("id-leak");
   });
 
   it("rejects outputs that still contain Japanese instead of Korean", () => {
     expect(getSuspiciousTranslationReason("聞こえなかったのか？", "聞こえなかったのか？")).toBe("contains-japanese-script");
     expect(getSuspiciousTranslationReason("俺はエヴアンだ！", "俺はエヴアンだ! 귀족인 크리스티나")).toBe("contains-japanese-script");
+  });
+
+  it("flags arabic number mismatches", () => {
+    expect(getSuspiciousTranslationReason("第3部隊は12人だ", "제3부대는 열한 명이야")).toBe("number-mismatch");
+    expect(getSuspiciousTranslationReason("第3部隊は12人だ", "제3부대는 12명이야")).toBeNull();
   });
 
   it("rejects source-copy outputs even after punctuation cleanup", () => {

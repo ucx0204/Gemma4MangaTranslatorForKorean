@@ -42,6 +42,7 @@ export type TranslationBlock = {
   readingText?: string;
   ocrRawText?: string;
   ocrConfidence?: number;
+  cleanSourceText?: string;
 };
 
 export type MangaPage = {
@@ -145,6 +146,7 @@ export type DocumentTranslationBatchItem = {
   readingText?: string;
   ocrRawText?: string;
   ocrConfidence?: number;
+  cleanSourceText?: string;
   prevContext?: string;
   nextContext?: string;
   retryCount?: number;

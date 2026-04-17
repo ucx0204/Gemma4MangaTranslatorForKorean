@@ -7,6 +7,11 @@ export type ChatCompletionResponse = {
     index?: number;
     message?: unknown;
   }>;
+  timings?: Partial<{
+    prompt_n: number;
+    cache_n: number;
+    predicted_n: number;
+  }>;
 };
 
 type ChatCompletionRequest = {

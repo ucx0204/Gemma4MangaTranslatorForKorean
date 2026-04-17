@@ -27,10 +27,13 @@ function parseTabbedTranslationPayload(
     onIssue?: (issue: TranslationPayloadIssue) => void;
   }
 ): RawGemmaTranslationBatch | null {
+  const idPattern = "([a-z]\\d{1,8})";
+  const idSeparatorPattern = "(<tab>|\\t+|[:：]\\s*|\\s+)";
   const lines = rawPayload.replace(/\r/g, "").split("\n");
   const items = new Map<string, string>();
   let currentId = "";
   let currentParts: string[] = [];
+  let sawProtocolLikeLine = false;
 
   const flush = () => {
     if (!currentId) {
@@ -54,9 +57,22 @@ function parseTabbedTranslationPayload(
       continue;
     }
 
-    const match = line.match(/^(?:[-*]\s*)?(b\d+)\s*(<tab>|\t+|[:：]\s*|-\s*|\s+)(.+)?$/i);
+    const match = line.match(new RegExp(`^(?:[-*]\\s*)?${idPattern}\\s*${idSeparatorPattern}(.+)?$`, "i"));
     if (match) {
+      sawProtocolLikeLine = true;
       const separator = String(match[2] ?? "");
+      const content = String(match[3] ?? "").trim();
+      const nestedIdPattern = new RegExp(`^${idPattern}(?:\\s*(?:<tab>|\\t+|[:：]|-)|\\b)`, "i");
+      if (nestedIdPattern.test(content)) {
+        options?.onIssue?.({
+          code: "malformed_id_line",
+          lineNumber: lineIndex + 1,
+          line,
+          blockId: match[1].trim()
+        });
+        flush();
+        continue;
+      }
       if (separator.toLowerCase() === "<tab>") {
         options?.onIssue?.({
           code: "literal_tab_placeholder",
@@ -64,22 +80,18 @@ function parseTabbedTranslationPayload(
           line,
           blockId: match[1].trim()
         });
-      } else if (separator === "-") {
-        options?.onIssue?.({
-          code: "malformed_id_line",
-          lineNumber: lineIndex + 1,
-          line,
-          blockId: match[1].trim()
-        });
       }
       flush();
       currentId = match[1].trim();
-      currentParts = [String(match[3] ?? "").trim()];
+      currentParts = [content];
       continue;
     }
 
-    const malformedIdMatch = line.match(/^(?:[-*]\s*)?(b\d+)(\S.*)?$/i);
+    const malformedIdMatch = line.match(new RegExp(`^(?:[-*]\\s*)?${idPattern}(\\S.*)?$`, "i"));
     if (malformedIdMatch) {
+      sawProtocolLikeLine = true;
+      const malformedTail = String(malformedIdMatch[2] ?? "");
+      const hyphenatedRangePattern = new RegExp(`^-\\s*(?:${idPattern}|\\d{1,8})(?:\\s*(?:<tab>|\\t+|[:：]|\\b)|$)`, "i");
       options?.onIssue?.({
         code: "malformed_id_line",
         lineNumber: lineIndex + 1,
@@ -87,8 +99,11 @@ function parseTabbedTranslationPayload(
         blockId: malformedIdMatch[1].trim()
       });
       flush();
+      if (hyphenatedRangePattern.test(malformedTail)) {
+        continue;
+      }
       currentId = malformedIdMatch[1].trim();
-      currentParts = [String(malformedIdMatch[2] ?? "").replace(/^[-:：]+/, "").trim()];
+      currentParts = [malformedTail.replace(/^[-:：]+/, "").trim()];
       continue;
     }
 
@@ -100,6 +115,9 @@ function parseTabbedTranslationPayload(
   flush();
 
   if (items.size === 0) {
+    if (sawProtocolLikeLine) {
+      return { items: {} };
+    }
     return null;
   }
 

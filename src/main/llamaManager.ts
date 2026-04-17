@@ -1,5 +1,6 @@
 import { nativeImage, type NativeImage } from "electron";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   applyTranslationBatchToPages,
@@ -7,9 +8,22 @@ import {
   buildDocumentTranslationBatches,
   buildTranslationGlossary,
   estimateDocumentSourceChars,
+  flattenDocumentTranslationItems,
   selectModelSource
 } from "../shared/documentTranslation";
 import { bboxToPixels, clamp } from "../shared/geometry";
+import {
+  applyPolishBatchToPages,
+  buildPolishBatch,
+  getPolishRepairReason,
+  buildPolishStyleNotes,
+  estimatePolishOutputReserve,
+  flattenPagesToPolishItems,
+  normalizePolishBatchResponse,
+  selectPolishRepairTargets,
+  type PolishTranslationBatch,
+  type PolishTranslationItem
+} from "../shared/polishTranslation";
 import type {
   DocumentBatchLimits,
   DocumentTranslationBatch,
@@ -22,8 +36,20 @@ import type {
 } from "../shared/types";
 import { countBatchPages, summarizeSource, withModelIds } from "./llm/batching";
 import { extractPayloadFromResponse, postChatCompletion } from "./llm/chatClient";
+import { buildPolishSystemPrompt, buildPolishUserMessage } from "./llm/polishPrompt";
 import { buildDocumentTranslationSystemPrompt, buildDocumentTranslationUserMessage, progressTextForMode } from "./llm/prompt";
 import { normalizeTranslationBatchResponse, type RejectedTranslation } from "./llm/responseNormalization";
+import {
+  buildSourceCleanupPayload,
+  buildSourceCleanupSystemPrompt,
+  buildSourceCleanupUserMessage,
+  buildSourceTriagePayload,
+  buildSourceTriageSystemPrompt,
+  buildSourceTriageUserMessage,
+  normalizeSourceCleanupText,
+  normalizeSourceTriageLabel,
+  type SourceTriageLabel
+} from "./llm/sourcePreparation";
 import { parseTranslationPayload, type TranslationPayloadIssue } from "./llm/translationProtocol";
 import { writeTranslationTrace } from "./llm/translationTrace";
 import { logError, logInfo, logWarn } from "./logger";
@@ -46,6 +72,7 @@ export class LlamaManager {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private tokenizeStrategy: { endpoint: string; body: "content" | "text" } | null | undefined;
+  private tokenEstimateCache = new Map<string, number | null>();
   private rejectedTranslations = new Map<string, RejectedTranslation>();
 
   public constructor(private readonly options: LlamaManagerOptions) {}
@@ -92,6 +119,9 @@ export class LlamaManager {
     let nextPages = clonePages(pages);
     const warnings: string[] = [];
     this.rejectedTranslations.clear();
+    const sourcePreparation = await this.prepareDocumentSources(nextPages);
+    nextPages = sourcePreparation.pages;
+    warnings.push(...sourcePreparation.warnings);
     const glossaryLimit = Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_LIMIT", "0"));
     const batchLimits = this.readBatchLimits();
     const baseBatches = this.attachBlockCropsToBatches(buildDocumentTranslationBatches(nextPages, batchLimits, []), nextPages);
@@ -109,6 +139,410 @@ export class LlamaManager {
       for (const batch of initialBatches) {
         nextPages = await this.translateBatchWithRetries(nextPages, batch, warnings);
       }
+    }
+
+    return { pages: nextPages, warnings };
+  }
+
+  private async prepareDocumentSources(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    let nextPages = pages;
+    const warnings: string[] = [];
+    const items = flattenDocumentTranslationItems(nextPages);
+
+    if (items.length === 0) {
+      return { pages: nextPages, warnings };
+    }
+
+    const triageLabels = await this.triageDocumentSources(items);
+    const cleanSourceByBlockId = new Map<string, string>();
+    const cleanupCandidates: DocumentTranslationBatchItem[] = [];
+    const triageCounts: Record<SourceTriageLabel, number> = {
+      clean: 0,
+      dirty: 0,
+      unsure: 0
+    };
+
+    for (const item of items) {
+      const label = triageLabels.get(item.blockId) ?? "unsure";
+      triageCounts[label] += 1;
+      if (label === "clean") {
+        cleanSourceByBlockId.set(item.blockId, selectModelSource(item));
+        continue;
+      }
+      cleanupCandidates.push(item);
+    }
+
+    logInfo("Completed source triage before translation", {
+      totalItems: items.length,
+      clean: triageCounts.clean,
+      dirty: triageCounts.dirty,
+      unsure: triageCounts.unsure
+    });
+
+    if (cleanupCandidates.length > 0) {
+      const cleanupResult = await this.cleanupDocumentSources(nextPages, cleanupCandidates);
+      nextPages = cleanupResult.pages;
+      warnings.push(...cleanupResult.warnings);
+
+      for (const [blockId, cleanSourceText] of cleanupResult.cleanSourceByBlockId.entries()) {
+        cleanSourceByBlockId.set(blockId, cleanSourceText);
+      }
+    }
+
+    nextPages = applyCleanSourceTextToPages(nextPages, cleanSourceByBlockId);
+    return { pages: nextPages, warnings };
+  }
+
+  private async triageDocumentSources(items: DocumentTranslationBatchItem[]): Promise<Map<string, SourceTriageLabel>> {
+    const batches = buildSimpleItemBatches(items, {
+      maxItems: Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_TRIAGE_MAX_ITEMS", "48")),
+      maxChars: Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_TRIAGE_CHAR_LIMIT", "12000"))
+    });
+    const labels = new Map<string, SourceTriageLabel>();
+
+    for (const batch of batches) {
+      this.options.signal.throwIfAborted();
+      const modelBatch = withModelIds(batch);
+      const triageLabels = await this.triageSourceBatch(modelBatch);
+      for (const item of modelBatch.items) {
+        labels.set(item.blockId, triageLabels.get(item.blockId) ?? "unsure");
+      }
+    }
+
+    return labels;
+  }
+
+  private async triageSourceBatch(batch: DocumentTranslationBatch): Promise<Map<string, SourceTriageLabel>> {
+    const payload = buildSourceTriagePayload(batch.items);
+    const systemPrompt = buildSourceTriageSystemPrompt();
+    const userText = buildSourceTriageUserMessage(payload);
+    const promptEstimate = await this.estimatePromptTokens(`${systemPrompt}\n${userText}`);
+
+    logInfo("Sending source triage batch", {
+      batchIndex: batch.chunkIndex,
+      totalBatches: batch.totalChunks,
+      itemCount: batch.items.length,
+      estimatedPromptTokens: promptEstimate
+    });
+
+    this.emit(
+      "running",
+      `원문 triage ${batch.chunkIndex}/${batch.totalChunks}`,
+      `${batch.items.length}개 OCR 줄, max_tokens=${this.maxTokensForMode("triage")}${promptEstimate ? `, prompt~${promptEstimate}tok` : ""}`
+    );
+
+    const response = await postChatCompletion({
+      apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
+      baseUrl: this.baseUrl,
+      signal: this.options.signal,
+      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      temperature: 0,
+      topP: 0.2,
+      presencePenalty: 0,
+      frequencyPenalty: 0,
+      maxTokens: this.maxTokensForMode("triage"),
+      stop: this.buildStopSequences(),
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: userText
+        }
+      ]
+    });
+
+    const rawPayload = extractPayloadFromResponse(response);
+    let parsed: RawGemmaTranslationBatch;
+    try {
+      parsed = parseTranslationPayload(rawPayload);
+    } catch (error) {
+      logWarn("Source triage payload parse failed; falling back to unsure", {
+        batchIndex: batch.chunkIndex,
+        itemCount: batch.items.length,
+        error: error instanceof Error ? error.message : String(error),
+        preview: rawPayload.slice(0, 300)
+      });
+      return new Map<string, SourceTriageLabel>();
+    }
+    const parsedItems = extractParsedPayloadItems(parsed);
+    const requestedById = new Map<string, string>();
+    for (const item of batch.items) {
+      if (item.modelId) {
+        requestedById.set(item.modelId, item.blockId);
+      }
+      requestedById.set(item.blockId, item.blockId);
+    }
+
+    const labels = new Map<string, SourceTriageLabel>();
+    for (const [requestId, rawValue] of parsedItems.entries()) {
+      const blockId = requestedById.get(requestId);
+      if (!blockId) {
+        continue;
+      }
+      labels.set(blockId, normalizeSourceTriageLabel(rawValue));
+    }
+
+    return labels;
+  }
+
+  private async cleanupDocumentSources(
+    pages: MangaPage[],
+    items: DocumentTranslationBatchItem[]
+  ): Promise<{ pages: MangaPage[]; warnings: string[]; cleanSourceByBlockId: Map<string, string> }> {
+    const warnings: string[] = [];
+    const cleanSourceByBlockId = new Map<string, string>();
+    const cleanupBatches = this.attachBlockCropsToBatches(
+      buildSimpleItemBatches(items, {
+        maxItems: Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_CLEANUP_MAX_ITEMS", "3")),
+        maxChars: Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_CLEANUP_CHAR_LIMIT", "1500"))
+      }),
+      pages,
+      { force: true }
+    );
+
+    for (const batch of cleanupBatches) {
+      this.options.signal.throwIfAborted();
+      const cleaned = await this.cleanupSourceBatchWithRetries(batch);
+      for (const [blockId, cleanSourceText] of cleaned.entries()) {
+        cleanSourceByBlockId.set(blockId, cleanSourceText);
+      }
+    }
+
+    const missingCount = items.length - cleanSourceByBlockId.size;
+    if (missingCount > 0) {
+      warnings.push(`[source_cleanup] ${missingCount}개 OCR 줄은 원문 재판독에 실패해 기존 OCR 텍스트로 번역합니다.`);
+    }
+
+    logInfo("Completed source cleanup before translation", {
+      candidateCount: items.length,
+      cleanedCount: cleanSourceByBlockId.size,
+      missingCount
+    });
+
+    return {
+      pages,
+      warnings,
+      cleanSourceByBlockId
+    };
+  }
+
+  private async cleanupSourceBatchWithRetries(batch: DocumentTranslationBatch): Promise<Map<string, string>> {
+    const cleaned = await this.cleanupSourceBatch(batch);
+    const missing = batch.items.filter((item) => !cleaned.has(item.blockId));
+    if (missing.length === 0) {
+      return cleaned;
+    }
+
+    logWarn("Retrying missing source cleanup items individually", {
+      batchIndex: batch.chunkIndex,
+      count: missing.length,
+      sample: missing.slice(0, 8).map((item) => ({
+        blockId: item.blockId,
+        sourcePreview: summarizeSource(item.ocrRawText ?? item.sourceText)
+      }))
+    });
+
+    for (const item of missing) {
+      const singleBatch: DocumentTranslationBatch = {
+        ...batch,
+        items: [item]
+      };
+      const retried = await this.cleanupSourceBatch(singleBatch);
+      const cleanedSource = retried.get(item.blockId);
+      if (cleanedSource) {
+        cleaned.set(item.blockId, cleanedSource);
+      }
+    }
+
+    return cleaned;
+  }
+
+  private async cleanupSourceBatch(batch: DocumentTranslationBatch): Promise<Map<string, string>> {
+    const modelBatch = withModelIds(batch);
+    const payload = buildSourceCleanupPayload(modelBatch.items);
+    const systemPrompt = buildSourceCleanupSystemPrompt();
+    const userText = buildSourceCleanupUserMessage(payload);
+    const promptEstimate = await this.estimatePromptTokens(`${systemPrompt}\n${userText}`);
+
+    logInfo("Sending source cleanup batch", {
+      batchIndex: batch.chunkIndex,
+      totalBatches: batch.totalChunks,
+      itemCount: modelBatch.items.length,
+      estimatedPromptTokens: promptEstimate,
+      attachedCropCount: modelBatch.items.filter((item) => Boolean(item.cropImageDataUrl)).length
+    });
+
+    this.emit(
+      "running",
+      `원문 재판독 ${batch.chunkIndex}/${batch.totalChunks}`,
+      `${modelBatch.items.length}개 OCR 줄, max_tokens=${this.maxTokensForMode("cleanup")}${promptEstimate ? `, prompt~${promptEstimate}tok` : ""}`
+    );
+
+    const response = await postChatCompletion({
+      apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
+      baseUrl: this.baseUrl,
+      signal: this.options.signal,
+      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      temperature: 0,
+      topP: 0.2,
+      presencePenalty: 0,
+      frequencyPenalty: 0,
+      maxTokens: this.maxTokensForMode("cleanup"),
+      stop: this.buildStopSequences(),
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: this.buildUserMessageContent(modelBatch, userText, {
+            mode: "cleanup",
+            forceBlockCrops: true,
+            allowPageImage: false
+          })
+        }
+      ]
+    });
+
+    const rawPayload = extractPayloadFromResponse(response);
+    let parsed: RawGemmaTranslationBatch;
+    try {
+      parsed = parseTranslationPayload(rawPayload);
+    } catch (error) {
+      logWarn("Source cleanup payload parse failed", {
+        batchIndex: batch.chunkIndex,
+        itemCount: modelBatch.items.length,
+        error: error instanceof Error ? error.message : String(error),
+        preview: rawPayload.slice(0, 300)
+      });
+      return new Map<string, string>();
+    }
+    const parsedItems = extractParsedPayloadItems(parsed);
+    const requestedById = new Map<string, string>();
+    for (const item of modelBatch.items) {
+      if (item.modelId) {
+        requestedById.set(item.modelId, item.blockId);
+      }
+      requestedById.set(item.blockId, item.blockId);
+    }
+
+    const cleaned = new Map<string, string>();
+    for (const [requestId, rawValue] of parsedItems.entries()) {
+      const blockId = requestedById.get(requestId);
+      if (!blockId) {
+        continue;
+      }
+
+      const cleanSourceText = normalizeSourceCleanupText(rawValue);
+      if (!cleanSourceText) {
+        continue;
+      }
+      cleaned.set(blockId, cleanSourceText);
+    }
+
+    return cleaned;
+  }
+
+  public async polishDocument(pages: MangaPage[]): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    this.options.signal.throwIfAborted();
+    let nextPages = clonePages(pages);
+    const warnings: string[] = [];
+
+    if (this.readStringEnv("MANGA_TRANSLATOR_ENABLE_POLISH", "1") !== "1") {
+      return { pages: nextPages, warnings };
+    }
+
+    let items = flattenPagesToPolishItems(nextPages);
+    if (items.length === 0) {
+      warnings.push("윤문할 번역 텍스트가 없습니다.");
+      return { pages: nextPages, warnings };
+    }
+
+    const styleNotes = buildPolishStyleNotes(
+      nextPages,
+      Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_STYLE_LIMIT", "16"))
+    );
+
+    const polishMode = this.readStringEnv("MANGA_TRANSLATOR_POLISH_MODE", "repair").trim().toLowerCase();
+    if (polishMode !== "full") {
+      return this.polishDocumentInRepairMode(nextPages, styleNotes, warnings);
+    }
+
+    let startIndex = 0;
+    let chunkIndex = 0;
+    while (startIndex < items.length) {
+      this.options.signal.throwIfAborted();
+      chunkIndex += 1;
+      const batch = await this.buildNextPolishBatch(items, startIndex, styleNotes, chunkIndex);
+      nextPages = await this.polishBatchWithRetries(nextPages, items, batch, warnings);
+      items = flattenPagesToPolishItems(nextPages);
+      startIndex = batch.items.at(-1)?.documentIndex ?? items.length;
+    }
+
+    return { pages: nextPages, warnings };
+  }
+
+  private async polishDocumentInRepairMode(
+    pages: MangaPage[],
+    styleNotes: string,
+    warnings: string[]
+  ): Promise<{ pages: MangaPage[]; warnings: string[] }> {
+    let nextPages = pages;
+    const initialItems = flattenPagesToPolishItems(nextPages);
+    const maxRepairItems = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_REPAIR_MAX_ITEMS", "128")));
+    const candidates = selectPolishRepairTargets(initialItems, { maxItems: maxRepairItems });
+
+    if (candidates.length === 0) {
+      return { pages: nextPages, warnings };
+    }
+
+    logInfo("Selected polish repair candidates", {
+      candidateCount: candidates.length,
+      sample: candidates.slice(0, 8).map((item) => ({
+        modelId: item.modelId,
+        blockId: item.blockId,
+        reason: item.repairReason,
+        sourcePreview: summarizeSource(item.sourceText),
+        translatedPreview: summarizeSource(item.translatedText)
+      }))
+    });
+
+    const overlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_REPAIR_OVERLAP_ITEMS", "4"));
+    const overlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_REPAIR_OVERLAP_TOKENS", "400"));
+    let chunkIndex = 0;
+
+    for (const candidate of candidates) {
+      this.options.signal.throwIfAborted();
+      const refreshedItems = flattenPagesToPolishItems(nextPages);
+      const targetIndex = refreshedItems.findIndex((item) => item.modelId === candidate.modelId);
+      if (targetIndex < 0) {
+        continue;
+      }
+
+      const refreshedTarget = refreshedItems[targetIndex];
+      const repairReason = getPolishRepairReason(refreshedTarget);
+      if (!repairReason) {
+        continue;
+      }
+
+      chunkIndex += 1;
+      const batch = buildPolishBatch(refreshedItems, targetIndex, targetIndex, {
+        chunkIndex,
+        totalChunks: candidates.length,
+        overlapItems,
+        overlapTokens,
+        styleNotes
+      });
+      batch.items = batch.items.map((item) => ({
+        ...item,
+        repairReason: item.modelId === refreshedTarget.modelId ? repairReason : item.repairReason
+      }));
+
+      nextPages = await this.polishBatchWithRetries(nextPages, refreshedItems, batch, warnings);
     }
 
     return { pages: nextPages, warnings };
@@ -187,7 +621,9 @@ export class LlamaManager {
     );
 
     const stopSequences = this.buildStopSequences();
-    const userMessageContent = this.buildUserMessageContent(modelBatch, userText);
+    const userMessageContent = this.buildUserMessageContent(modelBatch, userText, {
+      mode
+    });
 
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
@@ -273,34 +709,20 @@ export class LlamaManager {
     }
 
     this.writeMissingBlockTrace(batch, "initial", missingBlockIds, `Retrying ${missingBlockIds.length} omitted/rejected block ids`);
-    logWarn("Retrying omitted/rejected Gemma block ids", {
+    logWarn("Retrying omitted/rejected Gemma block ids individually", {
       chunkIndex: batch.chunkIndex,
       count: missingBlockIds.length,
       sample: this.describeMissingItems(batch, missingBlockIds)
     });
 
     const retryItems = this.buildRetryItems(batch, missingBlockIds);
-    const retryMode: Exclude<GemmaRequestMode, "repair"> = retryItems.length === 1 ? "single" : "group";
-    const retryBatches = await this.fitBatchesToTokenBudget([{ ...batch, items: retryItems }], retryMode);
-    for (const retryBatch of retryBatches) {
-      const retryTranslated = await this.translateBatch(retryBatch, retryMode);
-      nextPages = applyTranslationBatchToPages(nextPages, retryTranslated.items ?? []);
-    }
-
-    missingBlockIds = findUntranslatedBlockIds(
-      nextPages,
-      batch.items.map((item) => item.blockId)
-    );
-
-    if (missingBlockIds.length > 0 && retryItems.length > 1) {
-      for (const retryItem of this.buildRetryItems(batch, missingBlockIds)) {
-        const singleBatch: DocumentTranslationBatch = {
-          ...batch,
-          items: [retryItem]
-        };
-        const singleTranslated = await this.translateBatch(singleBatch, "single");
-        nextPages = applyTranslationBatchToPages(nextPages, singleTranslated.items ?? []);
-      }
+    for (const retryItem of retryItems) {
+      const singleBatch: DocumentTranslationBatch = {
+        ...batch,
+        items: [retryItem]
+      };
+      const singleTranslated = await this.translateBatch(singleBatch, "single");
+      nextPages = applyTranslationBatchToPages(nextPages, singleTranslated.items ?? []);
     }
 
     missingBlockIds = findUntranslatedBlockIds(
@@ -366,10 +788,18 @@ export class LlamaManager {
     });
   }
 
-  private buildUserMessageContent(batch: DocumentTranslationBatch, userText: string): string | unknown[] {
+  private buildUserMessageContent(
+    batch: DocumentTranslationBatch,
+    userText: string,
+    options?: {
+      mode?: GemmaRequestMode | "triage" | "cleanup";
+      forceBlockCrops?: boolean;
+      allowPageImage?: boolean;
+    }
+  ): string | unknown[] {
     const content: unknown[] = [{ type: "text", text: userText }];
 
-    for (const item of this.getAttachedCropItems(batch)) {
+    for (const item of this.getAttachedCropItems(batch, options)) {
       const label = item.modelId ?? item.blockId;
       content.push({
         type: "text",
@@ -383,7 +813,8 @@ export class LlamaManager {
       });
     }
 
-    if (this.shouldAttachPageImage() && batch.pageImageDataUrl) {
+    const allowPageImage = options?.allowPageImage ?? true;
+    if (allowPageImage && this.shouldAttachPageImage() && batch.pageImageDataUrl) {
       content.push({ type: "text", text: "PAGE: broad page context only. Do not translate unrequested text." });
       content.push({
         type: "image_url",
@@ -396,20 +827,35 @@ export class LlamaManager {
     return content.length > 1 ? content : userText;
   }
 
-  private attachBlockCropsToBatches(batches: DocumentTranslationBatch[], pages: MangaPage[]): DocumentTranslationBatch[] {
-    if (!this.shouldAttachBlockCrops()) {
+  private attachBlockCropsToBatches(
+    batches: DocumentTranslationBatch[],
+    pages: MangaPage[],
+    options?: {
+      force?: boolean;
+    }
+  ): DocumentTranslationBatch[] {
+    if (!options?.force && !this.shouldAttachBlockCrops()) {
       return batches;
     }
 
     const pagesById = new Map(pages.map((page) => [page.id, page]));
     const imageByPageId = new Map<string, NativeImage>();
+    const canUseNativeImage = typeof nativeImage?.createFromDataURL === "function";
 
     return batches.map((batch) => ({
       ...batch,
       items: batch.items.map((item) => {
+        if (!options?.force && item.cleanSourceText) {
+          return item;
+        }
         const page = pagesById.get(item.pageId);
         if (!page?.dataUrl || !item.bbox) {
           return item;
+        }
+
+        if (!canUseNativeImage) {
+          const cropImageDataUrl = this.buildBlockCropDataUrlWithShell(page, item);
+          return cropImageDataUrl ? { ...item, cropImageDataUrl } : item;
         }
 
         let sourceImage = imageByPageId.get(page.id);
@@ -451,12 +897,95 @@ export class LlamaManager {
     }).toDataURL();
   }
 
-  private getAttachedCropItems(batch: DocumentTranslationBatch): DocumentTranslationBatchItem[] {
-    if (!this.shouldAttachBlockCrops()) {
+  private buildBlockCropDataUrlWithShell(page: MangaPage, item: DocumentTranslationBatchItem): string | undefined {
+    if (!page.imagePath || !item.bbox) {
+      return undefined;
+    }
+
+    const pixelBox = bboxToPixels(item.bbox, page.width, page.height);
+    const rect = expandPixelRect(pixelBox, page.width, page.height, {
+      ratio: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_PADDING_RATIO", "0.22")),
+      minPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MIN_PADDING_PX", "24")),
+      maxPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MAX_PADDING_PX", "96"))
+    });
+
+    if (rect.width <= 1 || rect.height <= 1) {
+      return undefined;
+    }
+
+    const minSidePx = Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MIN_SIDE_PX", "256"));
+    const maxSidePx = Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MAX_SIDE_PX", "1024"));
+    const scriptPath = resolve(__dirname, "../../scripts/crop_image.ps1");
+
+    const result = spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        scriptPath,
+        "-Path",
+        page.imagePath,
+        "-X",
+        String(rect.x),
+        "-Y",
+        String(rect.y),
+        "-Width",
+        String(rect.width),
+        "-Height",
+        String(rect.height),
+        "-MinSide",
+        String(minSidePx),
+        "-MaxSide",
+        String(maxSidePx)
+      ],
+      {
+        encoding: "utf8",
+        maxBuffer: 8 * 1024 * 1024
+      }
+    );
+
+    if (result.status !== 0) {
+      logWarn("Failed to build crop image with PowerShell fallback", {
+        imagePath: page.imagePath,
+        blockId: item.blockId,
+        error: result.stderr?.trim() || result.stdout?.trim() || `exit=${result.status}`
+      });
+      return undefined;
+    }
+
+    const base64 = (result.stdout ?? "").replace(/\s+/g, "");
+    return base64 ? `data:image/png;base64,${base64}` : undefined;
+  }
+
+  private getAttachedCropItems(
+    batch: DocumentTranslationBatch,
+    options?: {
+      mode?: GemmaRequestMode | "triage" | "cleanup";
+      forceBlockCrops?: boolean;
+    }
+  ): DocumentTranslationBatchItem[] {
+    if (!options?.forceBlockCrops && !this.shouldAttachBlockCrops()) {
       return [];
     }
 
-    const items = batch.items.filter((item) => Boolean(item.cropImageDataUrl));
+    const mode = options?.mode ?? "initial";
+    const items = batch.items.filter((item) => {
+      if (!item.cropImageDataUrl) {
+        return false;
+      }
+      if (options?.forceBlockCrops) {
+        return true;
+      }
+      if (mode === "single") {
+        return true;
+      }
+      return !item.cleanSourceText;
+    });
+    if (options?.forceBlockCrops) {
+      return items;
+    }
     const maxCrops = Number(this.readStringEnv("MANGA_TRANSLATOR_MAX_BLOCK_CROPS", "0"));
     return maxCrops > 0 ? items.slice(0, maxCrops) : items;
   }
@@ -486,10 +1015,17 @@ export class LlamaManager {
       stopSequences: string[];
     }
   ): RawGemmaTranslationBatch {
+    const malformedModelIds = new Set<string>();
     try {
-      return parseTranslationPayload(rawPayload, {
-        onIssue: (issue) => this.logTranslationProtocolIssue(issue, rawPayload, batch, mode, diagnostics)
+      const parsed = parseTranslationPayload(rawPayload, {
+        onIssue: (issue) => {
+          this.logTranslationProtocolIssue(issue, rawPayload, batch, mode, diagnostics);
+          if (issue.code === "malformed_id_line" && issue.blockId) {
+            malformedModelIds.add(issue.blockId.trim());
+          }
+        }
       });
+      return malformedModelIds.size > 0 ? stripParsedItemsById(parsed, malformedModelIds) : parsed;
     } catch (error) {
       writeTranslationTrace({
         timestamp: new Date().toISOString(),
@@ -558,6 +1094,392 @@ export class LlamaManager {
       finishReason: diagnostics?.finishReason ?? null,
       stopSequences: diagnostics?.stopSequences ?? []
     });
+  }
+
+  private async polishBatchWithRetries(
+    pages: MangaPage[],
+    allItems: PolishTranslationItem[],
+    batch: PolishTranslationBatch,
+    warnings: string[]
+  ): Promise<MangaPage[]> {
+    let nextPages = pages;
+    const initialResponse = await this.polishBatch(batch);
+    const initialNormalized = normalizePolishBatchResponse({
+      parsed: initialResponse,
+      batch
+    });
+    nextPages = applyPolishBatchToPages(nextPages, initialNormalized.items);
+
+    this.logPolishNormalization(batch, initialNormalized);
+    this.writePolishWarnings(batch, initialNormalized, warnings);
+
+    let unresolved = this.collectUnresolvedPolishIds(batch, initialNormalized);
+    if (unresolved.length === 0) {
+      return nextPages;
+    }
+
+    const retryOverlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_ITEMS", "8"));
+    const retryOverlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_RETRY_OVERLAP_TOKENS", "800"));
+
+    for (const modelId of unresolved) {
+      this.options.signal.throwIfAborted();
+      const refreshedItems = flattenPagesToPolishItems(nextPages);
+      const targetIndex = refreshedItems.findIndex((item) => item.modelId === modelId);
+      if (targetIndex < 0) {
+        continue;
+      }
+
+      const retryBatch = buildPolishBatch(refreshedItems, targetIndex, targetIndex, {
+        chunkIndex: batch.chunkIndex,
+        totalChunks: batch.totalChunks,
+        overlapItems: retryOverlapItems,
+        overlapTokens: retryOverlapTokens,
+        styleNotes: batch.styleNotes
+      });
+      const retryResponse = await this.polishBatch(retryBatch);
+      const retryNormalized = normalizePolishBatchResponse({
+        parsed: retryResponse,
+        batch: retryBatch
+      });
+      nextPages = applyPolishBatchToPages(nextPages, retryNormalized.items);
+      this.logPolishNormalization(retryBatch, retryNormalized, true);
+      this.writePolishWarnings(retryBatch, retryNormalized, warnings, true);
+    }
+
+    const refreshedItems = flattenPagesToPolishItems(nextPages);
+    const refreshedByModelId = new Map(refreshedItems.map((item) => [item.modelId, item]));
+    unresolved = batch.items
+      .map((item) => item.modelId)
+      .filter((modelId) => {
+        const refreshed = refreshedByModelId.get(modelId);
+        return !refreshed?.translatedText.trim() || /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(refreshed.translatedText);
+      });
+
+    if (unresolved.length > 0) {
+      warnings.push(`[polish_omitted] Chunk ${batch.chunkIndex}: ${unresolved.length}개 줄을 끝까지 안정화하지 못했습니다.`);
+      logWarn("Polish batch left unresolved items after retry", {
+        chunkIndex: batch.chunkIndex,
+        unresolved
+      });
+    }
+
+    return nextPages;
+  }
+
+  private async polishBatch(batch: PolishTranslationBatch): Promise<RawGemmaTranslationBatch> {
+    const systemPrompt = buildPolishSystemPrompt();
+    const userText = buildPolishUserMessage(batch);
+    const promptEstimate = await this.estimatePromptTokensWithHeuristic(`${systemPrompt}\n${userText}`);
+    const outputReserve = await estimatePolishOutputReserve(batch.items, {
+      maxTokens: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_MAX_OUTPUT_TOKENS", "8192")),
+      tokenize: async (text) => await this.estimatePromptTokens(text)
+    });
+
+    for (const item of batch.items) {
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "request",
+        jobId: this.options.jobId,
+        pageId: item.pageId,
+        pageName: item.pageName,
+        blockId: item.blockId,
+        batchMode: "polish",
+        chunkIndex: batch.chunkIndex,
+        modelId: item.modelId,
+        sourceText: item.sourceText,
+        initialOutput: item.translatedText,
+        accepted: false
+      });
+    }
+
+    logInfo("Sending polish repair batch", {
+      chunkIndex: batch.chunkIndex,
+      totalChunks: batch.totalChunks,
+      targetCount: batch.items.length,
+      ctxPrevCount: batch.ctxPrev.length,
+      ctxNextCount: batch.ctxNext.length,
+      promptEstimate,
+      outputReserve,
+      repairReasons: batch.items.map((item) => item.repairReason).filter(Boolean),
+      sample: batch.items.slice(0, 3).map((item) => ({
+        modelId: item.modelId,
+        blockId: item.blockId,
+        sourcePreview: summarizeSource(item.sourceText),
+        translatedPreview: summarizeSource(item.translatedText)
+      }))
+    });
+
+    this.emit(
+      "running",
+      batch.totalChunks > 0 ? `문제 줄 보정 ${batch.chunkIndex}/${batch.totalChunks}` : `문제 줄 보정 ${batch.chunkIndex}`,
+      `${batch.items.length}개 줄, ctx ${batch.ctxPrev.length}+${batch.ctxNext.length}, max_tokens=${outputReserve}, prompt~${promptEstimate}tok`
+    );
+
+    const stopSequences = this.buildStopSequences();
+    const response = await postChatCompletion({
+      apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
+      baseUrl: this.baseUrl,
+      signal: this.options.signal,
+      model: this.readStringEnv("MANGA_TRANSLATOR_MODEL", DEFAULT_MODEL_HF),
+      temperature: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_TEMPERATURE", this.readStringEnv("MANGA_TRANSLATOR_TEMPERATURE", "0"))),
+      topP: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_TOP_P", this.readStringEnv("MANGA_TRANSLATOR_TOP_P", "0.85"))),
+      presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_PRESENCE_PENALTY", this.readStringEnv("MANGA_TRANSLATOR_PRESENCE_PENALTY", "0"))),
+      frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_FREQUENCY_PENALTY", this.readStringEnv("MANGA_TRANSLATOR_FREQUENCY_PENALTY", "0"))),
+      maxTokens: outputReserve,
+      stop: stopSequences,
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: userText
+        }
+      ]
+    });
+
+    const rawPayload = extractPayloadFromResponse(response);
+    const finishReason = typeof response.choices?.[0]?.finish_reason === "string"
+      ? response.choices[0].finish_reason
+      : null;
+
+    writeTranslationTrace({
+      timestamp: new Date().toISOString(),
+      event: "batch_response",
+      jobId: this.options.jobId,
+      batchMode: "polish",
+      chunkIndex: batch.chunkIndex,
+      detail: `finish_reason=${finishReason ?? "unknown"} prompt_n=${response.timings?.prompt_n ?? "?"} predicted_n=${response.timings?.predicted_n ?? "?"}`,
+      rawModelPayload: rawPayload,
+      requestedBlockIds: batch.items.map((item) => item.blockId),
+      finishReason,
+      stopSequences
+    });
+
+    logInfo("Polish response received", {
+      chunkIndex: batch.chunkIndex,
+      finishReason,
+      payloadLength: rawPayload.length,
+      promptEstimate,
+      timings: response.timings ?? null,
+      payloadPreview: rawPayload.slice(0, 160),
+      payloadTail: rawPayload.slice(-160)
+    });
+
+    return this.parsePolishResponse(rawPayload, batch, {
+      finishReason,
+      stopSequences
+    });
+  }
+
+  private async buildNextPolishBatch(
+    items: PolishTranslationItem[],
+    startIndex: number,
+    styleNotes: string,
+    chunkIndex: number
+  ): Promise<PolishTranslationBatch> {
+    const overlapItems = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_ITEMS", "12"));
+    const overlapTokens = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_OVERLAP_TOKENS", "1200"));
+    const maxTargetItems = Math.max(1, Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_MAX_TARGET_ITEMS", "40")));
+    let lo = startIndex;
+    let hi = Math.min(items.length - 1, startIndex + maxTargetItems - 1);
+    let best = startIndex;
+
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const candidate = buildPolishBatch(items, startIndex, mid, {
+        chunkIndex,
+        overlapItems,
+        overlapTokens,
+        styleNotes
+      });
+
+      if (await this.isPolishBatchWithinBudget(candidate)) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+
+    let batch = buildPolishBatch(items, startIndex, best, {
+      chunkIndex,
+      overlapItems,
+      overlapTokens,
+      styleNotes
+    });
+
+    if (!(await this.isPolishBatchWithinBudget(batch))) {
+      batch = buildPolishBatch(items, startIndex, startIndex, {
+        chunkIndex,
+        overlapItems: 0,
+        overlapTokens: 0,
+        styleNotes
+      });
+    }
+
+    return batch;
+  }
+
+  private async isPolishBatchWithinBudget(batch: PolishTranslationBatch): Promise<boolean> {
+    const systemPrompt = buildPolishSystemPrompt();
+    const userText = buildPolishUserMessage(batch);
+    const promptTokens = await this.estimatePromptTokensWithHeuristic(`${systemPrompt}\n${userText}`);
+    const outputReserve = await estimatePolishOutputReserve(batch.items, {
+      maxTokens: Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_MAX_OUTPUT_TOKENS", "8192")),
+      tokenize: async (text) => await this.estimatePromptTokens(text)
+    });
+    const contextWindow = Number(this.readStringEnv("MANGA_TRANSLATOR_CTX", "32768"));
+    const targetRatio = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_TARGET_RATIO", "0.90"));
+    const margin = Number(this.readStringEnv("MANGA_TRANSLATOR_POLISH_MARGIN", "2048"));
+    const targetBudget = Math.max(256, Math.floor(contextWindow * targetRatio));
+
+    return promptTokens + outputReserve + margin <= targetBudget;
+  }
+
+  private collectUnresolvedPolishIds(
+    batch: PolishTranslationBatch,
+    normalized: ReturnType<typeof normalizePolishBatchResponse>
+  ): string[] {
+    const unresolved = new Set<string>(normalized.missingModelIds);
+    for (const rejected of normalized.rejected) {
+      unresolved.add(rejected.modelId);
+    }
+    return batch.items.map((item) => item.modelId).filter((modelId) => unresolved.has(modelId));
+  }
+
+  private writePolishWarnings(
+    batch: PolishTranslationBatch,
+    normalized: ReturnType<typeof normalizePolishBatchResponse>,
+    warnings: string[],
+    isRetry = false
+  ): void {
+    const prefix = isRetry ? "[polish_retry]" : "[polish]";
+    if (normalized.unexpectedIds.length > 0) {
+      warnings.push(`${prefix} Chunk ${batch.chunkIndex}: 요청하지 않은 id ${normalized.unexpectedIds.slice(0, 6).join(", ")} 가 출력되었습니다.`);
+    }
+    if (normalized.contextLeakIds.length > 0) {
+      warnings.push(`${prefix} Chunk ${batch.chunkIndex}: 문맥용 id ${normalized.contextLeakIds.slice(0, 6).join(", ")} 가 잘못 출력되었습니다.`);
+    }
+    if (normalized.rejected.length > 0) {
+      warnings.push(
+        `${prefix} Chunk ${batch.chunkIndex}: ${normalized.rejected.length}개 줄이 윤문 검증에서 제외되었습니다.`
+      );
+    }
+  }
+
+  private logPolishNormalization(
+    batch: PolishTranslationBatch,
+    normalized: ReturnType<typeof normalizePolishBatchResponse>,
+    isRetry = false
+  ): void {
+    logInfo(isRetry ? "Normalized polish retry batch" : "Normalized polish batch", {
+      chunkIndex: batch.chunkIndex,
+      targetCount: batch.items.length,
+      acceptedCount: normalized.items.length,
+      missingCount: normalized.missingModelIds.length,
+      rejectedCount: normalized.rejected.length,
+      unexpectedIds: normalized.unexpectedIds,
+      contextLeakIds: normalized.contextLeakIds
+    });
+
+    for (const item of normalized.items) {
+      const requested = batch.items.find((candidate) => candidate.blockId === item.blockId);
+      if (!requested) {
+        continue;
+      }
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "response",
+        jobId: this.options.jobId,
+        pageId: requested.pageId,
+        pageName: requested.pageName,
+        blockId: requested.blockId,
+        batchMode: "polish",
+        chunkIndex: batch.chunkIndex,
+        modelId: requested.modelId,
+        sourceText: requested.sourceText,
+        initialOutput: requested.translatedText,
+        finalOutput: String(item.translatedText ?? ""),
+        accepted: true
+      });
+    }
+
+    for (const rejected of normalized.rejected) {
+      const requested = batch.items.find((candidate) => candidate.modelId === rejected.modelId);
+      if (!requested) {
+        continue;
+      }
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "rejected",
+        jobId: this.options.jobId,
+        pageId: requested.pageId,
+        pageName: requested.pageName,
+        blockId: requested.blockId,
+        batchMode: "polish",
+        chunkIndex: batch.chunkIndex,
+        modelId: requested.modelId,
+        sourceText: requested.sourceText,
+        initialOutput: requested.translatedText,
+        rejectedOutput: rejected.badOutput,
+        rejectionReason: rejected.reason,
+        accepted: false
+      });
+    }
+  }
+
+  private parsePolishResponse(
+    rawPayload: string,
+    batch: PolishTranslationBatch,
+    diagnostics?: {
+      finishReason: string | null;
+      stopSequences: string[];
+    }
+  ): RawGemmaTranslationBatch {
+    try {
+      return parseTranslationPayload(rawPayload, {
+        onIssue: (issue) => {
+          writeTranslationTrace({
+            timestamp: new Date().toISOString(),
+            event: "batch_issue",
+            jobId: this.options.jobId,
+            batchMode: "polish",
+            chunkIndex: batch.chunkIndex,
+            modelId: issue.blockId,
+            issueCode: issue.code,
+            detail: `line ${issue.lineNumber}: ${issue.line}`,
+            rawModelPayload: rawPayload,
+            requestedBlockIds: batch.items.map((item) => item.blockId),
+            finishReason: diagnostics?.finishReason ?? null,
+            stopSequences: diagnostics?.stopSequences
+          });
+        }
+      });
+    } catch (error) {
+      writeTranslationTrace({
+        timestamp: new Date().toISOString(),
+        event: "batch_issue",
+        jobId: this.options.jobId,
+        batchMode: "polish",
+        chunkIndex: batch.chunkIndex,
+        issueCode: "parse_failed",
+        detail: error instanceof Error ? error.message : String(error),
+        rawModelPayload: rawPayload,
+        requestedBlockIds: batch.items.map((item) => item.blockId),
+        finishReason: diagnostics?.finishReason ?? null,
+        stopSequences: diagnostics?.stopSequences
+      });
+      logError("Polish payload parse failed", {
+        chunkIndex: batch.chunkIndex,
+        payloadLength: rawPayload.length,
+        error: error instanceof Error ? error.message : String(error),
+        preview: rawPayload.slice(0, 400),
+        tail: rawPayload.slice(-400)
+      });
+      throw error;
+    }
   }
 
   private async waitForReady(): Promise<void> {
@@ -729,7 +1651,17 @@ export class LlamaManager {
   }
 
   private async estimatePromptTokens(userContent: string): Promise<number | null> {
-    return await this.tokenizeWithServer(userContent);
+    if (this.tokenEstimateCache.has(userContent)) {
+      return this.tokenEstimateCache.get(userContent) ?? null;
+    }
+
+    const estimated = await this.tokenizeWithServer(userContent);
+    this.tokenEstimateCache.set(userContent, estimated);
+    return estimated;
+  }
+
+  private async estimatePromptTokensWithHeuristic(userContent: string): Promise<number> {
+    return (await this.estimatePromptTokens(userContent)) ?? approximateTextTokenCount(userContent);
   }
 
   private getPromptTokenBudget(mode: Exclude<GemmaRequestMode, "repair">): number {
@@ -853,7 +1785,13 @@ export class LlamaManager {
     });
   }
 
-  private maxTokensForMode(mode: GemmaRequestMode): number {
+  private maxTokensForMode(mode: GemmaRequestMode | "triage" | "cleanup"): number {
+    if (mode === "triage") {
+      return Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_TRIAGE_MAX_TOKENS", "384"));
+    }
+    if (mode === "cleanup") {
+      return Number(this.readStringEnv("MANGA_TRANSLATOR_SOURCE_CLEANUP_MAX_TOKENS", "256"));
+    }
     if (mode === "repair") {
       return Number(this.readStringEnv("MANGA_TRANSLATOR_REPAIR_MAX_TOKENS", "384"));
     }
@@ -868,7 +1806,7 @@ export class LlamaManager {
 
   private readBatchLimits(): DocumentBatchLimits {
     return {
-      maxBlocks: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_BLOCKS", "1")),
+      maxBlocks: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_BLOCKS", "6")),
       maxPages: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_PAGES", "1")),
       maxChars: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_CHAR_LIMIT", "4500"))
     };
@@ -898,6 +1836,126 @@ function findUntranslatedBlockIds(pages: MangaPage[], blockIds: string[]): strin
     }
   }
   return blockIds.filter((blockId) => !translated.has(blockId));
+}
+
+function applyCleanSourceTextToPages(pages: MangaPage[], cleanSourceByBlockId: ReadonlyMap<string, string>): MangaPage[] {
+  return pages.map((page) => ({
+    ...page,
+    blocks: page.blocks.map((block) => {
+      const cleanSourceText = cleanSourceByBlockId.get(block.id);
+      if (!cleanSourceText) {
+        return block;
+      }
+      return {
+        ...block,
+        cleanSourceText
+      };
+    })
+  }));
+}
+
+function buildSimpleItemBatches(
+  items: DocumentTranslationBatchItem[],
+  limits: {
+    maxItems: number;
+    maxChars: number;
+  }
+): DocumentTranslationBatch[] {
+  const batches: DocumentTranslationBatch[] = [];
+  let current: DocumentTranslationBatchItem[] = [];
+  let currentChars = 0;
+
+  const pushCurrent = () => {
+    if (current.length === 0) {
+      return;
+    }
+    batches.push({
+      chunkIndex: batches.length + 1,
+      totalChunks: 0,
+      items: current,
+      glossary: []
+    });
+    current = [];
+    currentChars = 0;
+  };
+
+  for (const item of items) {
+    const itemCost =
+      selectModelSource(item).length +
+      (item.ocrRawText?.length ?? 0) +
+      (item.readingText?.length ?? 0) +
+      24;
+    if (
+      current.length > 0 &&
+      (current.length >= Math.max(1, limits.maxItems) || currentChars + itemCost > Math.max(256, limits.maxChars))
+    ) {
+      pushCurrent();
+    }
+    current.push(item);
+    currentChars += itemCost;
+  }
+
+  pushCurrent();
+  return batches.map((batch, index, all) => ({
+    ...batch,
+    chunkIndex: index + 1,
+    totalChunks: all.length
+  }));
+}
+
+function extractParsedPayloadItems(parsed: RawGemmaTranslationBatch): Map<string, string> {
+  const extracted = new Map<string, string>();
+  const rawItems = parsed.items;
+  if (Array.isArray(rawItems)) {
+    for (const item of rawItems) {
+      const key = String(item.blockId ?? item.id ?? "").trim();
+      const value = String(item.translatedText ?? item.translated_text ?? item.translation ?? item.translated ?? item.t ?? "").trim();
+      if (key && value) {
+        extracted.set(key, value);
+      }
+    }
+    return extracted;
+  }
+
+  if (rawItems && typeof rawItems === "object") {
+    for (const [key, value] of Object.entries(rawItems)) {
+      const normalizedKey = String(key).trim();
+      const normalizedValue = typeof value === "string" ? value.trim() : String(value ?? "").trim();
+      if (normalizedKey && normalizedValue) {
+        extracted.set(normalizedKey, normalizedValue);
+      }
+    }
+  }
+
+  return extracted;
+}
+
+function stripParsedItemsById(parsed: RawGemmaTranslationBatch, blockedIds: ReadonlySet<string>): RawGemmaTranslationBatch {
+  if (blockedIds.size === 0) {
+    return parsed;
+  }
+
+  if (Array.isArray(parsed.items)) {
+    return {
+      ...parsed,
+      items: parsed.items.filter((item) => {
+        const key = String(item.blockId ?? item.id ?? "").trim();
+        return key ? !blockedIds.has(key) : true;
+      })
+    };
+  }
+
+  if (parsed.items && typeof parsed.items === "object") {
+    const nextItems = Object.fromEntries(
+      Object.entries(parsed.items).filter(([key]) => !blockedIds.has(String(key).trim()))
+    );
+    return {
+      ...parsed,
+      items: nextItems
+    };
+  }
+
+  return parsed;
 }
 
 
@@ -1006,4 +2064,8 @@ function tokenizeArgs(input: string): string[] {
   }
 
   return tokens;
+}
+
+function approximateTextTokenCount(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 2));
 }

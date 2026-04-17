@@ -55,4 +55,73 @@ describe("parseTranslationPayload", () => {
     const parsed = parseTranslationPayload('{ "items": { "b1": "보고합니다" } }');
     expect(parsed.items).toEqual({ b1: "보고합니다" });
   });
+
+  it("parses global polish ids like g000001", () => {
+    const parsed = parseTranslationPayload("g000001\t다듬은 대사\ng000002\t그럴 리 없어");
+    expect(parsed.items).toEqual({
+      g000001: "다듬은 대사",
+      g000002: "그럴 리 없어"
+    });
+  });
+
+  it("drops malformed chained polish ids instead of leaking the second id into text", () => {
+    const issues: TranslationPayloadIssue[] = [];
+    const parsed = parseTranslationPayload(
+      "g000007-g000008\t우린 친구니까\ng000009\t그런 느낌이야",
+      {
+        onIssue: (issue) => issues.push(issue)
+      }
+    );
+
+    expect(parsed.items).toEqual({
+      g000009: "그런 느낌이야"
+    });
+    expect(issues).toEqual([
+      {
+        code: "malformed_id_line",
+        lineNumber: 1,
+        line: "g000007-g000008\t우린 친구니까",
+        blockId: "g000007"
+      }
+    ]);
+  });
+
+  it("drops short chained polish ids when the model omits the second g-prefix", () => {
+    const issues: TranslationPayloadIssue[] = [];
+    const parsed = parseTranslationPayload(
+      "g11-12\t우린 친구였으니까\ng13\t말해줘",
+      {
+        onIssue: (issue) => issues.push(issue)
+      }
+    );
+
+    expect(parsed.items).toEqual({
+      g13: "말해줘"
+    });
+    expect(issues).toEqual([
+      {
+        code: "malformed_id_line",
+        lineNumber: 1,
+        line: "g11-12\t우린 친구였으니까",
+        blockId: "g11"
+      }
+    ]);
+  });
+
+  it("treats a bare id-only line as an empty protocol response instead of throwing", () => {
+    const issues: TranslationPayloadIssue[] = [];
+    const parsed = parseTranslationPayload("g8", {
+      onIssue: (issue) => issues.push(issue)
+    });
+
+    expect(parsed.items).toEqual({});
+    expect(issues).toEqual([
+      {
+        code: "malformed_id_line",
+        lineNumber: 1,
+        line: "g8",
+        blockId: "g8"
+      }
+    ]);
+  });
 });

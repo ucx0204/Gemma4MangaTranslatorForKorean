@@ -347,12 +347,15 @@ function registerIpc(): void {
       activeJob.cleanup = () => llama.shutdown();
       await llama.ensureRunning();
       const translationResult = await llama.translateDocument(ocrPages);
-      await llama.shutdown();
-      logInfo("Gemma server shutdown complete", { jobId: id });
-      activeJob.cleanup = undefined;
       warnings.push(...translationResult.warnings);
 
       let pages = translationResult.pages;
+      const polishResult = await llama.polishDocument(pages);
+      pages = polishResult.pages;
+      warnings.push(...polishResult.warnings);
+      await llama.shutdown();
+      logInfo("Gemma server shutdown complete", { jobId: id });
+      activeJob.cleanup = undefined;
 
       if (request.inpaintSettings.enabled) {
         const inpaint = new InpaintManager({ jobId: id, emit, signal: abortController.signal });

@@ -7,5 +7,6 @@ out/
 scripts/__pycache__/
 tmp-tiles/
 tmp-*.png
+tmp/
 models/
 logs/

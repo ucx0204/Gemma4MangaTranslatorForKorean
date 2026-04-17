@@ -140,7 +140,7 @@ export function buildTranslationGlossary(pages: MangaPage[], limit = 8): Array<{
   const bySource = new Map<string, string>();
   for (const page of pages) {
     for (const block of page.blocks) {
-      const sourceText = block.sourceText.trim();
+      const sourceText = (block.cleanSourceText ?? block.sourceText).trim();
       const translatedText = block.translatedText.trim();
       if (!sourceText || !translatedText) {
         continue;
@@ -264,11 +264,20 @@ export function sanitizeOcrModelSource(rawText: string, readingText = ""): strin
 }
 
 export function selectModelSource(item: DocumentTranslationBatchItem): string {
+  const cleanSource = item.cleanSourceText?.trim() ?? "";
+  if (cleanSource) {
+    return cleanSource;
+  }
+
   const raw = item.ocrRawText?.trim() ?? "";
   const source = raw || item.sourceText.trim();
   const candidate = sanitizeOcrModelSource(source, item.readingText);
   const fallback = stripOcrMarkdownFences(source);
   return candidate || fallback;
+}
+
+export function flattenDocumentTranslationItems(pages: MangaPage[]): DocumentTranslationBatchItem[] {
+  return pages.flatMap((page) => pageToBatchItems(page));
 }
 
 export function selectReadingHint(item: DocumentTranslationBatchItem): string {
@@ -306,6 +315,10 @@ export function getSuspiciousTranslationReason(
     return "source-copy";
   }
 
+  if (hasArabicNumberMismatch(signalSource, translatedText)) {
+    return "number-mismatch";
+  }
+
   if (hasPromptLeak(compactTranslated)) {
     return "prompt-leak";
   }
@@ -316,6 +329,10 @@ export function getSuspiciousTranslationReason(
 
   if (/[{}\[\]"]/.test(compactTranslated) && /items|blockId|translated/i.test(compactTranslated)) {
     return "schema-leak";
+  }
+
+  if (/(?:^|[\s"'`([{])g\d{1,8}(?=$|[\s"'`)\]}:,.!?-])/iu.test(translatedText) || /^g\d{1,8}/iu.test(translatedText)) {
+    return "id-leak";
   }
 
   if (hasAsciiRunaway(compactTranslated)) {
@@ -425,6 +442,24 @@ function normalizeForComparison(text: string): string {
   return text.replace(/[\s"'`~!@#$%^&*()\-_=+[\]{}\\|;:,<.>/?！？…・。、「」『』（）]/gu, "").toLowerCase();
 }
 
+function hasArabicNumberMismatch(sourceText: string, translatedText: string): boolean {
+  const sourceNumbers = extractDigitSequences(sourceText);
+  if (sourceNumbers.length === 0) {
+    return false;
+  }
+
+  const translatedNumbers = extractDigitSequences(translatedText);
+  if (translatedNumbers.length === 0) {
+    return true;
+  }
+
+  return sourceNumbers.join("|") !== translatedNumbers.join("|");
+}
+
+function extractDigitSequences(text: string): string[] {
+  return [...text.matchAll(/\d+/g)].map((match) => match[0]);
+}
+
 function createBatch(
   index: number,
   items: DocumentTranslationBatchItem[],
@@ -492,7 +527,8 @@ function buildContextPreview(block: TranslationBlock | undefined): string {
     typeHint: block.type,
     sourceDirection: block.sourceDirection,
     readingText: block.readingText,
-    ocrRawText: block.ocrRawText
+    ocrRawText: block.ocrRawText,
+    cleanSourceText: block.cleanSourceText
   });
   const singleLine = compact.replace(/\s+/g, " ").trim();
   if (singleLine.length <= CONTEXT_CHAR_LIMIT) {
@@ -513,7 +549,8 @@ function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslat
     sourceDirection: block.sourceDirection,
     readingText: block.readingText,
     ocrRawText: block.ocrRawText,
-    ocrConfidence: block.ocrConfidence
+    ocrConfidence: block.ocrConfidence,
+    cleanSourceText: block.cleanSourceText
   };
 }
 
@@ -591,7 +628,7 @@ function estimateItemCost(item: DocumentTranslationBatchItem): number {
 
 function toReferenceSnippet(text: string): string {
   const singleLine = text.replace(/\s+/g, " ").trim();
-  if (singleLine.length < 8) {
+  if (singleLine.length < 4) {
     return "";
   }
   if (/^[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+[！!？?…]*$/u.test(singleLine) && singleLine.length <= 10) {

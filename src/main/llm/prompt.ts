@@ -31,6 +31,18 @@ export function formatModeLabel(mode: TranslationMode): string {
 }
 
 function buildDocumentTranslationPrompt(mode: TranslationMode): string {
+  const variant = readTranslationPromptVariant();
+  if (variant === "strict_v3") {
+    return buildExampleDrivenTranslationPrompt(mode);
+  }
+  if (variant === "strict_v2") {
+    return buildStrictTranslationPrompt(mode);
+  }
+
+  return buildLegacyTranslationPrompt(mode);
+}
+
+function buildLegacyTranslationPrompt(mode: TranslationMode): string {
   return [
     "Translate Japanese manga OCR into natural Korean manga dialogue.",
     "Read the whole target chunk first, then translate each target id separately.",
@@ -77,4 +89,95 @@ function buildDocumentTranslationPrompt(mode: TranslationMode): string {
         ? "This is a single target chunk."
         : "This is an initial chunk."
   ].join("\n");
+}
+
+function buildStrictTranslationPrompt(mode: TranslationMode): string {
+  return [
+    "Translate Japanese manga text into Korean manga dialogue.",
+    "",
+    "Hard rules:",
+    "- Output Korean only.",
+    "- Every line must be exactly: b1<TAB>translation",
+    "- Missing the tab makes the answer invalid.",
+    "- Return every requested id exactly once, in the same order.",
+    "- Never merge ids, skip ids, rename ids, or move text across ids.",
+    "- Translate only the current item's text.",
+    "- If the current item is fragmentary, keep it fragmentary in Korean.",
+    "- Do not complete the sentence with another item's meaning.",
+    "- Do not borrow text from ctx, page image, or nearby bubbles.",
+    "- Preserve names, ranks, numbers, 후보, and uncertainty.",
+    "- Katakana names must be transliterated into Korean, never left in Japanese.",
+    "- Never output Japanese, explanations, JSON, markdown, bullets, or alternatives.",
+    "",
+    "Input:",
+    "- items: translation targets. Only these ids are translatable.",
+    "- ctx: nearby tone reference only. Never translate ctx directly.",
+    "- attached CROP b1 images: use only to verify the same item's glyphs when OCR looks wrong.",
+    "- r: reading hint only. Use it only to disambiguate names or kanji readings.",
+    "- why/bad: retry hint for the same item.",
+    "",
+    "Behavior:",
+    "- Prefer the visible text in s. Use crop/r only to fix OCR mistakes.",
+    "- Ignore furigana and kana-only reading noise unless it changes the actual source line.",
+    "- Keep short shouts, trailing clauses, and unfinished lines short.",
+    "- For retry items, fix the exact failure and stay concise.",
+    "",
+    "Output:",
+    "- Output only one line per item.",
+    "- Use a real tab character between id and translation.",
+    "- Example: b1\t한국어 번역",
+    mode === "group"
+      ? "This is a context retry chunk. Re-read the whole chunk and fix only the weak lines cleanly."
+      : mode === "single"
+        ? "This is a single target chunk."
+        : "This is an initial chunk."
+  ].join("\n");
+}
+
+function buildExampleDrivenTranslationPrompt(mode: TranslationMode): string {
+  return [
+    "You are a Korean manga translator.",
+    "",
+    "Task:",
+    "- Read the current chunk first.",
+    "- Translate each requested item into Korean.",
+    "- Keep each item separate.",
+    "",
+    "Output format:",
+    "b1\t한국어 번역",
+    "b2\t한국어 번역",
+    "",
+    "Format rules:",
+    "- Write exactly one tab-separated line for every requested id.",
+    "- Keep the same order as items.",
+    "- If an id line is missing the tab, the answer is invalid.",
+    "",
+    "Translation rules:",
+    "- Translate only the current item's text.",
+    "- If the current item is incomplete, output an incomplete Korean line.",
+    "- Keep names, titles, numbers, 후보, and uncertainty.",
+    "- Convert katakana names into Korean spelling.",
+    "- Use crop/r only to fix OCR mistakes in the same item.",
+    "- Use ctx only for tone and speaker, never for extra content.",
+    "- Output Korean only.",
+    "",
+    "Examples:",
+    'Input item: {"id":"b1","s":"弱い！"}',
+    "Output: b1\t약해!",
+    'Input item: {"id":"b1","s":"クリスティナ様"}',
+    "Output: b1\t크리스티나 님",
+    'Input item: {"id":"b1","s":"そんな時に 出会ったのが"}',
+    "Output: b1\t그때 만난 게",
+    "",
+    mode === "group"
+      ? "This is a context retry chunk. Fix only the weak lines."
+      : mode === "single"
+        ? "This is a single target chunk."
+        : "This is an initial chunk."
+  ].join("\n");
+}
+
+function readTranslationPromptVariant(): string {
+  const value = process.env.MANGA_TRANSLATOR_TRANSLATION_PROMPT_VARIANT;
+  return value && value.trim() ? value.trim().toLowerCase() : "legacy";
 }

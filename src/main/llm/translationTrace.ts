@@ -2,6 +2,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { GemmaRequestMode } from "../../shared/types";
 
+export type TranslationTraceMode = GemmaRequestMode | "polish";
+
 export type TranslationTraceEntry = {
   timestamp: string;
   event?: "request" | "response" | "rejected" | "batch_issue" | "batch_response";
@@ -9,7 +11,7 @@ export type TranslationTraceEntry = {
   pageId?: string;
   pageName?: string;
   blockId?: string;
-  batchMode?: GemmaRequestMode;
+  batchMode?: TranslationTraceMode;
   chunkIndex?: number;
   modelId?: string;
   sourceText?: string;

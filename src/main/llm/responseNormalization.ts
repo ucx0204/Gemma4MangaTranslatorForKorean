@@ -184,7 +184,7 @@ export function normalizeTranslationBatchResponse(options: {
   };
 }
 
-function normalizeModelTranslationText(text: string): string {
+export function normalizeModelTranslationText(text: string): string {
   return normalizeMixedJapaneseLeak(
     text
     .replace(/([가-힣]+)\s*\([\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+\)/gu, "$1")
