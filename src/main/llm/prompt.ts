@@ -3,7 +3,7 @@ import type { DocumentTranslationBatch, GemmaRequestMode } from "../../shared/ty
 type TranslationMode = Exclude<GemmaRequestMode, "repair">;
 
 export function buildDocumentTranslationUserMessage(_mode: TranslationMode, payload: string): string {
-  return `INPUT_JSON=${payload}`;
+  return `OUTPUT_JSON_SHAPE={"items":{"b1":"한국어 번역"}}\nINPUT_JSON=${payload}`;
 }
 
 export function buildDocumentTranslationSystemPrompt(mode: TranslationMode): string {
@@ -183,7 +183,15 @@ function buildExampleDrivenTranslationPrompt(mode: TranslationMode): string {
 function buildStructuredTranslationPrompt(mode: TranslationMode): string {
   return [
     "Translate Japanese manga text into natural Korean manga dialogue.",
-    "Fill the JSON schema only.",
+    "Return JSON only.",
+    "",
+    "Output shape:",
+    '{"items":{"b1":"한국어 번역","b2":"한국어 번역"}}',
+    "- The top-level object must contain an items object.",
+    "- The items object maps each id to one Korean translation string.",
+    "- Never use JSON arrays.",
+    "- Never use per-item objects like {\"id\":\"b1\",\"t\":\"...\"}.",
+    "- Never add explanations, comments, markdown, or extra keys.",
     "",
     "Read:",
     "- items: only these ids are translatable.",
@@ -198,7 +206,7 @@ function buildStructuredTranslationPrompt(mode: TranslationMode): string {
     "- Preserve names, ranks, numbers, uncertainty, and relationship terms literally.",
     "- Katakana names must be transliterated into Korean.",
     "- Use reading hints and crops only to repair OCR mistakes in the same item.",
-    "- Output Korean dialogue only. No explanations or meta text.",
+    "- Output Korean dialogue strings only. No explanations or meta text.",
     "",
     mode === "group"
       ? "This is a context retry chunk. Fix only the weak lines."

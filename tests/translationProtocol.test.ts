@@ -55,6 +55,29 @@ describe("parseTranslationPayload", () => {
     expect(parsed.items).toEqual({ b1: "보고합니다" });
   });
 
+  it("accepts valid JSON arrays of compact translation objects", () => {
+    const parsed = parseTranslationPayload('[{"id":"b1","t":"보고합니다"},{"id":"b2","t":"계획은 실패한 모양이네요"}]');
+    expect(parsed.items).toEqual([
+      { id: "b1", t: "보고합니다" },
+      { id: "b2", t: "계획은 실패한 모양이네요" }
+    ]);
+  });
+
+  it("salvages malformed JSON-ish translation arrays by extracting id-text pairs", () => {
+    const parsed = parseTranslationPayload(`[
+  {"id": "b1", "t": "리드 님"},
+  {"id": "b2", "t: "아"},
+  {"id": a3, "t": "몸 컨디션은 어떤가?"},
+  {"id": "b4",- "t": "위화감은 없나?"}
+]`);
+    expect(parsed.items).toEqual({
+      b1: "리드 님",
+      b2: "아",
+      a3: "몸 컨디션은 어떤가?",
+      b4: "위화감은 없나?"
+    });
+  });
+
   it("parses global polish ids like g000001", () => {
     const parsed = parseTranslationPayload("g000001\t다듬은 대사\ng000002\t그럴 리 없어");
     expect(parsed.items).toEqual({

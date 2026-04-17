@@ -13,6 +13,10 @@ describe("model JSON parsing", () => {
     });
   });
 
+  it("recovers a JSON array from surrounding text", () => {
+    expect(parseJsonPayload('note [{"id":"b1","t":"보고합니다"}] trailing')).toEqual([{ id: "b1", t: "보고합니다" }]);
+  });
+
   it("falls back to reasoning_content if content is empty", () => {
     expect(extractMessagePayload({ content: "", reasoning_content: '{"blocks":[]}' })).toBe('{"blocks":[]}');
   });
@@ -38,6 +42,15 @@ describe("model JSON parsing", () => {
         { cropId: "A", blocks: [{ id: "a", bbox: { x: 1, y: 2, w: 3, h: 4 } }] },
         { cropId: "B", blocks: [] }
       ]
+    });
+  });
+
+  it("repairs translation payload properties that use compact t keys", () => {
+    expect(
+      parseJsonPayload(`{"items":[{"id":"b1"
+"t":"보고합니다"}]}`)
+    ).toEqual({
+      items: [{ id: "b1", t: "보고합니다" }]
     });
   });
 });

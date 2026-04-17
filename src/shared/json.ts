@@ -31,10 +31,34 @@ export function parseJsonPayload(rawText: string): unknown {
       return JSON.parse(itemsObject[0]);
     }
 
+    const firstBracket = normalized.indexOf("[");
+    const lastBracket = normalized.lastIndexOf("]");
     const firstBrace = normalized.indexOf("{");
     const lastBrace = normalized.lastIndexOf("}");
+    const tryArrayFirst = firstBracket >= 0 && (firstBrace < 0 || firstBracket < firstBrace);
+
+    if (tryArrayFirst && firstBracket >= 0 && lastBracket > firstBracket) {
+      try {
+        return JSON.parse(normalized.slice(firstBracket, lastBracket + 1));
+      } catch {
+        // Continue to object fallback below.
+      }
+    }
+
     if (firstBrace >= 0 && lastBrace > firstBrace) {
-      return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+      try {
+        return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+      } catch {
+        // Continue to array fallback below.
+      }
+    }
+
+    if (!tryArrayFirst && firstBracket >= 0 && lastBracket > firstBracket) {
+      try {
+        return JSON.parse(normalized.slice(firstBracket, lastBracket + 1));
+      } catch {
+        // Fall through to the final error below.
+      }
     }
 
     throw new Error("Model did not return valid JSON");
@@ -43,7 +67,7 @@ export function parseJsonPayload(rawText: string): unknown {
 
 function repairCommonJsonBreakage(input: string): string {
   const knownKeys =
-    "(?:imageWidth|imageHeight|image_width|image_height|sourceLanguage|targetLanguage|crops|cropId|items|targetId|blockId|blocks|id|type|k|bbox|x|y|w|h|sourceText|source_text|translatedText|translated_text|translated|translation|readingText|reading_text|confidence|sourceDirection|source_direction|renderDirection|render_direction|dir|rd|fontSizePx|font_size_px|lineHeight|line_height|textAlign|text_align|textColor|text_color|backgroundColor|background_color|opacity)";
+    "(?:imageWidth|imageHeight|image_width|image_height|sourceLanguage|targetLanguage|crops|cropId|items|targetId|blockId|blocks|id|type|k|bbox|x|y|w|h|sourceText|source_text|translatedText|translated_text|translated|translation|t|readingText|reading_text|confidence|sourceDirection|source_direction|renderDirection|render_direction|dir|rd|fontSizePx|font_size_px|lineHeight|line_height|textAlign|text_align|textColor|text_color|backgroundColor|background_color|opacity|why|bad|style|ctx|ctxPrev|ctxNext|gl|s|r|p|n)";
 
   return input
     .replace(/}\s*{/g, "},{")

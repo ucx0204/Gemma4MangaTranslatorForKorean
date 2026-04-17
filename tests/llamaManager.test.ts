@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { LlamaManager } from "../src/main/llamaManager";
 import type { PolishTranslationBatch } from "../src/shared/polishTranslation";
+import type { DocumentTranslationBatch } from "../src/shared/types";
 
 const ORIGINAL_STOP_SEQUENCES = process.env.MANGA_TRANSLATOR_STOP_SEQUENCES;
 const ORIGINAL_SKIP_CHAT_PARSING = process.env.MANGA_TRANSLATOR_SKIP_CHAT_PARSING;
@@ -106,5 +107,70 @@ describe("LlamaManager polish parsing", () => {
       }
     ).parsePolishResponse("<|channel>", batch);
     expect(parsed).toEqual({ items: {} });
+  });
+
+  it("recovers plain-text output for single-item polish retries", () => {
+    const manager = createManager();
+    const batch: PolishTranslationBatch = {
+      chunkIndex: 1,
+      totalChunks: 1,
+      ctxPrev: [],
+      ctxNext: [],
+      styleNotes: "",
+      items: [
+        {
+          blockId: "page-1-block-1",
+          modelId: "g1",
+          pageId: "page-1",
+          pageName: "001.png",
+          pageBlockIndex: 1,
+          documentIndex: 1,
+          typeHint: "speech",
+          sourceDirection: "vertical",
+          sourceText: "ここでは誰に聞かれているか分かりません",
+          translatedText: "그럼 여기서부터 시작하자!"
+        }
+      ]
+    };
+
+    const parsed = (
+      manager as unknown as {
+        parsePolishResponse: (rawPayload: string, batch: PolishTranslationBatch) => { items?: unknown };
+      }
+    ).parsePolishResponse("누가 듣고 있는지 모르겠어요", batch);
+    expect(parsed).toEqual({ items: { g1: "누가 듣고 있는지 모르겠어요" } });
+  });
+});
+
+describe("LlamaManager translation parsing", () => {
+  it("recovers plain-text output for single-item translation retries", () => {
+    const manager = createManager();
+    const batch: DocumentTranslationBatch = {
+      chunkIndex: 1,
+      totalChunks: 1,
+      glossary: [],
+      items: [
+        {
+          blockId: "page-1-block-1",
+          modelId: "b31",
+          pageId: "page-1",
+          pageName: "001.png",
+          sourceText: "目を...ですか?",
+          typeHint: "speech",
+          sourceDirection: "vertical"
+        }
+      ]
+    };
+
+    const parsed = (
+      manager as unknown as {
+        parseTranslationResponse: (
+          rawPayload: string,
+          batch: DocumentTranslationBatch,
+          mode: "initial" | "group" | "single"
+        ) => { items?: unknown };
+      }
+    ).parseTranslationResponse("눈을...요?", batch, "single");
+    expect(parsed).toEqual({ items: { b31: "눈을...요?" } });
   });
 });

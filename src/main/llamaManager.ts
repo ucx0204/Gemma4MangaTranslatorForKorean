@@ -1732,6 +1732,7 @@ export class LlamaManager {
   ): RawGemmaTranslationBatch {
     const malformedModelIds = new Set<string>();
     const normalizedPayload = normalizeProtocolPayload(rawPayload);
+    const singleTargetId = batch.items[0]?.modelId ?? batch.items[0]?.blockId ?? "";
     try {
       const parsed = parseTranslationPayload(rawPayload, {
         onIssue: (issue) => {
@@ -1741,8 +1742,64 @@ export class LlamaManager {
           }
         }
       });
-      return malformedModelIds.size > 0 ? stripParsedItemsById(parsed, malformedModelIds) : parsed;
+      const sanitized = malformedModelIds.size > 0 ? stripParsedItemsById(parsed, malformedModelIds) : parsed;
+      if (batch.items.length === 1 && singleTargetId && isTranslationBatchEmpty(sanitized)) {
+        const fallback = inferSingleItemTranslationFallback(rawPayload);
+        if (fallback) {
+          writeTranslationTrace({
+            timestamp: new Date().toISOString(),
+            event: "batch_issue",
+            jobId: this.options.jobId,
+            batchMode: mode,
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            issueCode: "single_item_plaintext_fallback",
+            detail: fallback,
+            rawModelPayload: rawPayload,
+            requestedBlockIds: batch.items.map((item) => item.blockId),
+            finishReason: diagnostics?.finishReason ?? null,
+            stopSequences: diagnostics?.stopSequences
+          });
+          logWarn("Recovered single-item translation from plain-text fallback", {
+            mode,
+            batchIndex: batch.chunkIndex,
+            blockId: batch.items[0]?.blockId ?? null,
+            modelId: singleTargetId,
+            translatedPreview: summarizeSource(fallback)
+          });
+          return { items: { [singleTargetId]: fallback } };
+        }
+      }
+      return sanitized;
     } catch (error) {
+      if (batch.items.length === 1 && singleTargetId) {
+        const fallback = inferSingleItemTranslationFallback(rawPayload);
+        if (fallback) {
+          writeTranslationTrace({
+            timestamp: new Date().toISOString(),
+            event: "batch_issue",
+            jobId: this.options.jobId,
+            batchMode: mode,
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            issueCode: "single_item_plaintext_fallback",
+            detail: fallback,
+            rawModelPayload: rawPayload,
+            requestedBlockIds: batch.items.map((item) => item.blockId),
+            finishReason: diagnostics?.finishReason ?? null,
+            stopSequences: diagnostics?.stopSequences
+          });
+          logWarn("Recovered single-item translation after parse failure", {
+            mode,
+            batchIndex: batch.chunkIndex,
+            blockId: batch.items[0]?.blockId ?? null,
+            modelId: singleTargetId,
+            error: error instanceof Error ? error.message : String(error),
+            translatedPreview: summarizeSource(fallback)
+          });
+          return { items: { [singleTargetId]: fallback } };
+        }
+      }
       writeTranslationTrace({
         timestamp: new Date().toISOString(),
         event: "batch_issue",
@@ -2189,8 +2246,9 @@ export class LlamaManager {
       stopSequences: string[];
     }
   ): RawGemmaTranslationBatch {
+    const singleTargetId = batch.items[0]?.modelId ?? "";
     try {
-      return parseTranslationPayload(rawPayload, {
+      const parsed = parseTranslationPayload(rawPayload, {
         onIssue: (issue) => {
           writeTranslationTrace({
             timestamp: new Date().toISOString(),
@@ -2208,7 +2266,59 @@ export class LlamaManager {
           });
         }
       });
+      if (batch.items.length === 1 && singleTargetId && isTranslationBatchEmpty(parsed)) {
+        const fallback = inferSingleItemTranslationFallback(rawPayload);
+        if (fallback) {
+          writeTranslationTrace({
+            timestamp: new Date().toISOString(),
+            event: "batch_issue",
+            jobId: this.options.jobId,
+            batchMode: "polish",
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            issueCode: "single_item_plaintext_fallback",
+            detail: fallback,
+            rawModelPayload: rawPayload,
+            requestedBlockIds: batch.items.map((item) => item.blockId),
+            finishReason: diagnostics?.finishReason ?? null,
+            stopSequences: diagnostics?.stopSequences
+          });
+          logWarn("Recovered single-item polish line from plain-text fallback", {
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            translatedPreview: summarizeSource(fallback)
+          });
+          return { items: { [singleTargetId]: fallback } };
+        }
+      }
+      return parsed;
     } catch (error) {
+      if (batch.items.length === 1 && singleTargetId) {
+        const fallback = inferSingleItemTranslationFallback(rawPayload);
+        if (fallback) {
+          writeTranslationTrace({
+            timestamp: new Date().toISOString(),
+            event: "batch_issue",
+            jobId: this.options.jobId,
+            batchMode: "polish",
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            issueCode: "single_item_plaintext_fallback",
+            detail: fallback,
+            rawModelPayload: rawPayload,
+            requestedBlockIds: batch.items.map((item) => item.blockId),
+            finishReason: diagnostics?.finishReason ?? null,
+            stopSequences: diagnostics?.stopSequences
+          });
+          logWarn("Recovered single-item polish line after parse failure", {
+            chunkIndex: batch.chunkIndex,
+            modelId: singleTargetId,
+            error: error instanceof Error ? error.message : String(error),
+            translatedPreview: summarizeSource(fallback)
+          });
+          return { items: { [singleTargetId]: fallback } };
+        }
+      }
       writeTranslationTrace({
         timestamp: new Date().toISOString(),
         event: "batch_issue",
@@ -2827,6 +2937,51 @@ function stripParsedItemsById(parsed: RawGemmaTranslationBatch, blockedIds: Read
   return parsed;
 }
 
+function isTranslationBatchEmpty(parsed: RawGemmaTranslationBatch): boolean {
+  if (!parsed.items) {
+    return true;
+  }
+  if (Array.isArray(parsed.items)) {
+    return parsed.items.length === 0;
+  }
+  return typeof parsed.items === "object" ? Object.keys(parsed.items).length === 0 : true;
+}
+
+function inferSingleItemTranslationFallback(rawPayload: string): string {
+  const normalized = normalizeProtocolPayload(rawPayload);
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => normalizeProtocolLine(line))
+    .filter(Boolean);
+  if (lines.length !== 1) {
+    return "";
+  }
+
+  const candidate = lines[0]
+    .replace(/^["']+|["']+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!candidate) {
+    return "";
+  }
+
+  if (/^(?:target ids?|valid_target_ids|input_json|ctx(?:prev|next)?|context|style|items?|output|answer|rejected|next steps|technical_error)\b/i.test(candidate)) {
+    return "";
+  }
+  if (/[{}\[\]]/.test(candidate) && /(?:items|blockid|translated|translation|input_json|ctxprev|ctxnext|schema|json|why)\b/i.test(candidate)) {
+    return "";
+  }
+  if (/\b[bg]\d{1,8}\b/i.test(candidate)) {
+    return "";
+  }
+
+  return candidate;
+}
+
 
 type CropRect = { x: number; y: number; width: number; height: number };
 
@@ -2977,7 +3132,7 @@ function glossaryEntryScore(entry: { sourceText: string; translatedText: string 
 
 function isRecoverableModelOutputError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /empty response|valid json/i.test(message);
+  return /empty response|valid json|syntaxerror|unexpected token|unexpected non-whitespace character|json|parse/i.test(message);
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {
