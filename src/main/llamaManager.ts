@@ -1,3 +1,4 @@
+import { nativeImage, type NativeImage } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -8,19 +9,22 @@ import {
   estimateDocumentSourceChars,
   selectModelSource
 } from "../shared/documentTranslation";
+import { bboxToPixels, clamp } from "../shared/geometry";
 import type {
   DocumentBatchLimits,
   DocumentTranslationBatch,
+  DocumentTranslationBatchItem,
   GemmaRequestMode,
   JobEvent,
   MangaPage,
+  BBox,
   RawGemmaTranslationBatch
 } from "../shared/types";
 import { countBatchPages, summarizeSource, withModelIds } from "./llm/batching";
 import { extractPayloadFromResponse, postChatCompletion } from "./llm/chatClient";
 import { buildDocumentTranslationSystemPrompt, buildDocumentTranslationUserMessage, progressTextForMode } from "./llm/prompt";
 import { normalizeTranslationBatchResponse, type RejectedTranslation } from "./llm/responseNormalization";
-import { parseTranslationPayload } from "./llm/translationProtocol";
+import { parseTranslationPayload, type TranslationPayloadIssue } from "./llm/translationProtocol";
 import { writeTranslationTrace } from "./llm/translationTrace";
 import { logError, logInfo, logWarn } from "./logger";
 import { terminateProcess } from "./utils/process";
@@ -90,7 +94,7 @@ export class LlamaManager {
     this.rejectedTranslations.clear();
     const glossaryLimit = Number(this.readStringEnv("MANGA_TRANSLATOR_GLOSSARY_LIMIT", "0"));
     const batchLimits = this.readBatchLimits();
-    const baseBatches = buildDocumentTranslationBatches(nextPages, batchLimits, []);
+    const baseBatches = this.attachBlockCropsToBatches(buildDocumentTranslationBatches(nextPages, batchLimits, []), nextPages);
 
     if (baseBatches.length === 0) {
       warnings.push("번역할 OCR 텍스트가 없습니다.");
@@ -103,42 +107,7 @@ export class LlamaManager {
       const initialBatches = await this.fitBatchesToTokenBudget([{ ...baseBatch, glossary }], "initial");
 
       for (const batch of initialBatches) {
-        const translated = await this.translateBatch(batch, "initial");
-        nextPages = applyTranslationBatchToPages(nextPages, translated.items ?? []);
-
-        const missingBlockIds = findUntranslatedBlockIds(
-          nextPages,
-          batch.items.map((item) => item.blockId)
-        );
-
-        if (missingBlockIds.length === 0) {
-          continue;
-        }
-
-        writeTranslationTrace({
-          timestamp: new Date().toISOString(),
-          event: "batch_issue",
-          jobId: this.options.jobId,
-          batchMode: "initial",
-          chunkIndex: batch.chunkIndex,
-          issueCode: "omitted_ids",
-          detail: `Gemma omitted ${missingBlockIds.length} block ids`,
-          requestedBlockIds: batch.items.map((item) => item.blockId)
-        });
-
-        logWarn("Gemma omitted block ids", {
-          chunkIndex: batch.chunkIndex,
-          count: missingBlockIds.length,
-          sample: batch.items
-            .filter((item) => missingBlockIds.includes(item.blockId))
-            .slice(0, 8)
-            .map((item) => ({
-              blockId: item.blockId,
-              sourcePreview: summarizeSource(item.ocrRawText ?? item.sourceText),
-              confidence: item.ocrConfidence ?? null
-            }))
-        });
-        warnings.push(`[omitted_ids] Chunk ${batch.chunkIndex}: ${missingBlockIds.length}개 블록이 비어 있습니다.`);
+        nextPages = await this.translateBatchWithRetries(nextPages, batch, warnings);
       }
     }
 
@@ -201,6 +170,9 @@ export class LlamaManager {
       retryMode: mode,
       estimatedPromptTokens: promptEstimate,
       targetPromptTokens: this.getPromptTokenBudget(mode),
+      attachedCropCount: this.getAttachedCropItems(modelBatch).length,
+      attachPageImage: this.shouldAttachPageImage() && Boolean(modelBatch.pageImageDataUrl),
+      stopSequences: this.buildStopSequences(),
       sample: batch.items.slice(0, 3).map((item) => ({
         blockId: item.blockId,
         sourcePreview: summarizeSource(item.ocrRawText ?? item.sourceText),
@@ -214,18 +186,8 @@ export class LlamaManager {
       `${batch.items.length}개 OCR 블록, ${estimateDocumentSourceChars(batch.items)}자, max_tokens=${maxTokens}${promptEstimate ? `, prompt~${promptEstimate}tok` : ""}`
     );
 
-    const shouldAttachPageImage = this.readStringEnv("MANGA_TRANSLATOR_ATTACH_PAGE_IMAGE", "1") === "1";
-    const userMessageContent = shouldAttachPageImage && modelBatch.pageImageDataUrl
-      ? [
-          { type: "text", text: userText },
-          {
-            type: "image_url",
-            image_url: {
-              url: modelBatch.pageImageDataUrl
-            }
-          }
-        ]
-      : userText;
+    const stopSequences = this.buildStopSequences();
+    const userMessageContent = this.buildUserMessageContent(modelBatch, userText);
 
     const response = await postChatCompletion({
       apiKey: this.readStringEnv("MANGA_TRANSLATOR_LLAMA_API_KEY", "local-llama-server"),
@@ -237,7 +199,7 @@ export class LlamaManager {
       presencePenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_PRESENCE_PENALTY", "0")),
       frequencyPenalty: Number(this.readStringEnv("MANGA_TRANSLATOR_FREQUENCY_PENALTY", "0")),
       maxTokens,
-      stop: this.buildStopSequences(),
+      stop: stopSequences,
       messages: [
         {
           role: "system",
@@ -251,7 +213,37 @@ export class LlamaManager {
     });
 
     const rawPayload = extractPayloadFromResponse(response);
-    const parsed = this.parseTranslationResponse(rawPayload, batch, mode);
+    const finishReason = typeof response.choices?.[0]?.finish_reason === "string"
+      ? response.choices[0].finish_reason
+      : null;
+
+    logInfo("Gemma translation response received", {
+      mode,
+      batchIndex: batch.chunkIndex,
+      blockCount: batch.items.length,
+      finishReason,
+      payloadLength: rawPayload.length,
+      stopSequences,
+      payloadPreview: rawPayload.slice(0, 120),
+      payloadTail: rawPayload.slice(-120)
+    });
+    writeTranslationTrace({
+      timestamp: new Date().toISOString(),
+      event: "batch_response",
+      jobId: this.options.jobId,
+      batchMode: mode,
+      chunkIndex: batch.chunkIndex,
+      detail: `finish_reason=${finishReason ?? "unknown"} payload_length=${rawPayload.length}`,
+      rawModelPayload: rawPayload,
+      requestedBlockIds: batch.items.map((item) => item.blockId),
+      finishReason,
+      stopSequences
+    });
+
+    const parsed = this.parseTranslationResponse(rawPayload, batch, mode, {
+      finishReason,
+      stopSequences
+    });
     return normalizeTranslationBatchResponse({
       parsed,
       batch: modelBatch,
@@ -262,13 +254,242 @@ export class LlamaManager {
     });
   }
 
+
+  private async translateBatchWithRetries(
+    pages: MangaPage[],
+    batch: DocumentTranslationBatch,
+    warnings: string[]
+  ): Promise<MangaPage[]> {
+    let nextPages = pages;
+    const translated = await this.translateBatch(batch, "initial");
+    nextPages = applyTranslationBatchToPages(nextPages, translated.items ?? []);
+
+    let missingBlockIds = findUntranslatedBlockIds(
+      nextPages,
+      batch.items.map((item) => item.blockId)
+    );
+    if (missingBlockIds.length === 0) {
+      return nextPages;
+    }
+
+    this.writeMissingBlockTrace(batch, "initial", missingBlockIds, `Retrying ${missingBlockIds.length} omitted/rejected block ids`);
+    logWarn("Retrying omitted/rejected Gemma block ids", {
+      chunkIndex: batch.chunkIndex,
+      count: missingBlockIds.length,
+      sample: this.describeMissingItems(batch, missingBlockIds)
+    });
+
+    const retryItems = this.buildRetryItems(batch, missingBlockIds);
+    const retryMode: Exclude<GemmaRequestMode, "repair"> = retryItems.length === 1 ? "single" : "group";
+    const retryBatches = await this.fitBatchesToTokenBudget([{ ...batch, items: retryItems }], retryMode);
+    for (const retryBatch of retryBatches) {
+      const retryTranslated = await this.translateBatch(retryBatch, retryMode);
+      nextPages = applyTranslationBatchToPages(nextPages, retryTranslated.items ?? []);
+    }
+
+    missingBlockIds = findUntranslatedBlockIds(
+      nextPages,
+      batch.items.map((item) => item.blockId)
+    );
+
+    if (missingBlockIds.length > 0 && retryItems.length > 1) {
+      for (const retryItem of this.buildRetryItems(batch, missingBlockIds)) {
+        const singleBatch: DocumentTranslationBatch = {
+          ...batch,
+          items: [retryItem]
+        };
+        const singleTranslated = await this.translateBatch(singleBatch, "single");
+        nextPages = applyTranslationBatchToPages(nextPages, singleTranslated.items ?? []);
+      }
+    }
+
+    missingBlockIds = findUntranslatedBlockIds(
+      nextPages,
+      batch.items.map((item) => item.blockId)
+    );
+
+    if (missingBlockIds.length > 0) {
+      this.writeMissingBlockTrace(batch, "initial", missingBlockIds, `Gemma omitted ${missingBlockIds.length} block ids after retries`);
+      logWarn("Gemma omitted block ids after retries", {
+        chunkIndex: batch.chunkIndex,
+        count: missingBlockIds.length,
+        sample: this.describeMissingItems(batch, missingBlockIds)
+      });
+      warnings.push(`[omitted_ids] Chunk ${batch.chunkIndex}: ${missingBlockIds.length}개 블록이 비어 있습니다.`);
+    }
+
+    return nextPages;
+  }
+
+  private buildRetryItems(batch: DocumentTranslationBatch, blockIds: string[]): DocumentTranslationBatchItem[] {
+    const missing = new Set(blockIds);
+    return batch.items
+      .filter((item) => missing.has(item.blockId))
+      .map((item) => {
+        const rejected = this.rejectedTranslations.get(item.blockId);
+        return {
+          ...item,
+          retryCount: rejected ? rejected.retryCount : (item.retryCount ?? 0) + 1,
+          rejectedReason: rejected?.reason ?? item.rejectedReason ?? "omitted_ids",
+          rejectedOutput: rejected?.badOutput ?? item.rejectedOutput
+        };
+      });
+  }
+
+  private describeMissingItems(batch: DocumentTranslationBatch, blockIds: string[]): Array<Record<string, unknown>> {
+    return batch.items
+      .filter((item) => blockIds.includes(item.blockId))
+      .slice(0, 8)
+      .map((item) => ({
+        blockId: item.blockId,
+        sourcePreview: summarizeSource(item.ocrRawText ?? item.sourceText),
+        confidence: item.ocrConfidence ?? null,
+        rejectedReason: this.rejectedTranslations.get(item.blockId)?.reason ?? item.rejectedReason ?? null
+      }));
+  }
+
+  private writeMissingBlockTrace(
+    batch: DocumentTranslationBatch,
+    mode: Exclude<GemmaRequestMode, "repair">,
+    missingBlockIds: string[],
+    detail: string
+  ): void {
+    writeTranslationTrace({
+      timestamp: new Date().toISOString(),
+      event: "batch_issue",
+      jobId: this.options.jobId,
+      batchMode: mode,
+      chunkIndex: batch.chunkIndex,
+      issueCode: "omitted_ids",
+      detail,
+      requestedBlockIds: batch.items.map((item) => item.blockId)
+    });
+  }
+
+  private buildUserMessageContent(batch: DocumentTranslationBatch, userText: string): string | unknown[] {
+    const content: unknown[] = [{ type: "text", text: userText }];
+
+    for (const item of this.getAttachedCropItems(batch)) {
+      const label = item.modelId ?? item.blockId;
+      content.push({
+        type: "text",
+        text: `CROP ${label}: source Japanese image for item ${label}. Use only to verify this item's glyphs.`
+      });
+      content.push({
+        type: "image_url",
+        image_url: {
+          url: item.cropImageDataUrl
+        }
+      });
+    }
+
+    if (this.shouldAttachPageImage() && batch.pageImageDataUrl) {
+      content.push({ type: "text", text: "PAGE: broad page context only. Do not translate unrequested text." });
+      content.push({
+        type: "image_url",
+        image_url: {
+          url: batch.pageImageDataUrl
+        }
+      });
+    }
+
+    return content.length > 1 ? content : userText;
+  }
+
+  private attachBlockCropsToBatches(batches: DocumentTranslationBatch[], pages: MangaPage[]): DocumentTranslationBatch[] {
+    if (!this.shouldAttachBlockCrops()) {
+      return batches;
+    }
+
+    const pagesById = new Map(pages.map((page) => [page.id, page]));
+    const imageByPageId = new Map<string, NativeImage>();
+
+    return batches.map((batch) => ({
+      ...batch,
+      items: batch.items.map((item) => {
+        const page = pagesById.get(item.pageId);
+        if (!page?.dataUrl || !item.bbox) {
+          return item;
+        }
+
+        let sourceImage = imageByPageId.get(page.id);
+        if (!sourceImage) {
+          sourceImage = nativeImage.createFromDataURL(page.dataUrl);
+          imageByPageId.set(page.id, sourceImage);
+        }
+
+        const cropImageDataUrl = this.buildBlockCropDataUrl(page, sourceImage, item);
+        return cropImageDataUrl ? { ...item, cropImageDataUrl } : item;
+      })
+    }));
+  }
+
+  private buildBlockCropDataUrl(page: MangaPage, sourceImage: NativeImage, item: DocumentTranslationBatchItem): string | undefined {
+    if (!item.bbox || sourceImage.isEmpty()) {
+      return undefined;
+    }
+
+    const pixelBox = bboxToPixels(item.bbox, page.width, page.height);
+    const rect = expandPixelRect(pixelBox, page.width, page.height, {
+      ratio: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_PADDING_RATIO", "0.22")),
+      minPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MIN_PADDING_PX", "24")),
+      maxPaddingPx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MAX_PADDING_PX", "96"))
+    });
+
+    if (rect.width <= 1 || rect.height <= 1) {
+      return undefined;
+    }
+
+    const cropped = sourceImage.crop(rect);
+    if (cropped.isEmpty()) {
+      return undefined;
+    }
+
+    return resizeCropForVision(cropped, {
+      minSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MIN_SIDE_PX", "256")),
+      maxSidePx: Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_MAX_SIDE_PX", "1024"))
+    }).toDataURL();
+  }
+
+  private getAttachedCropItems(batch: DocumentTranslationBatch): DocumentTranslationBatchItem[] {
+    if (!this.shouldAttachBlockCrops()) {
+      return [];
+    }
+
+    const items = batch.items.filter((item) => Boolean(item.cropImageDataUrl));
+    const maxCrops = Number(this.readStringEnv("MANGA_TRANSLATOR_MAX_BLOCK_CROPS", "0"));
+    return maxCrops > 0 ? items.slice(0, maxCrops) : items;
+  }
+
+  private estimateVisualTokenCost(batch: DocumentTranslationBatch): number {
+    const cropCost = Number(this.readStringEnv("MANGA_TRANSLATOR_BLOCK_CROP_TOKEN_COST", "280"));
+    const pageImageCost = Number(this.readStringEnv("MANGA_TRANSLATOR_PAGE_IMAGE_TOKEN_COST", "320"));
+    const cropTokenCost = this.getAttachedCropItems(batch).length * cropCost;
+    const pageTokenCost = this.shouldAttachPageImage() && batch.pageImageDataUrl ? pageImageCost : 0;
+    return cropTokenCost + pageTokenCost;
+  }
+
+  private shouldAttachBlockCrops(): boolean {
+    return this.readStringEnv("MANGA_TRANSLATOR_ATTACH_BLOCK_CROPS", "1") === "1";
+  }
+
+  private shouldAttachPageImage(): boolean {
+    return this.readStringEnv("MANGA_TRANSLATOR_ATTACH_PAGE_IMAGE", "0") === "1";
+  }
+
   private parseTranslationResponse(
     rawPayload: string,
     batch: DocumentTranslationBatch,
-    mode: Exclude<GemmaRequestMode, "repair">
+    mode: Exclude<GemmaRequestMode, "repair">,
+    diagnostics?: {
+      finishReason: string | null;
+      stopSequences: string[];
+    }
   ): RawGemmaTranslationBatch {
     try {
-      return parseTranslationPayload(rawPayload);
+      return parseTranslationPayload(rawPayload, {
+        onIssue: (issue) => this.logTranslationProtocolIssue(issue, rawPayload, batch, mode, diagnostics)
+      });
     } catch (error) {
       writeTranslationTrace({
         timestamp: new Date().toISOString(),
@@ -279,13 +500,17 @@ export class LlamaManager {
         issueCode: "parse_failed",
         detail: error instanceof Error ? error.message : String(error),
         rawModelPayload: rawPayload,
-        requestedBlockIds: batch.items.map((item) => item.blockId)
+        requestedBlockIds: batch.items.map((item) => item.blockId),
+        finishReason: diagnostics?.finishReason ?? null,
+        stopSequences: diagnostics?.stopSequences
       });
       logError("Gemma translation payload parse failed", {
         mode,
         batchIndex: batch.chunkIndex,
         blockCount: batch.items.length,
         payloadLength: rawPayload.length,
+        finishReason: diagnostics?.finishReason ?? null,
+        stopSequences: diagnostics?.stopSequences ?? [],
         error: error instanceof Error ? error.message : String(error),
         batchSample: batch.items.slice(0, 3).map((item) => ({
           blockId: item.blockId,
@@ -296,6 +521,43 @@ export class LlamaManager {
       });
       throw error;
     }
+  }
+
+  private logTranslationProtocolIssue(
+    issue: TranslationPayloadIssue,
+    rawPayload: string,
+    batch: DocumentTranslationBatch,
+    mode: Exclude<GemmaRequestMode, "repair">,
+    diagnostics?: {
+      finishReason: string | null;
+      stopSequences: string[];
+    }
+  ): void {
+    writeTranslationTrace({
+      timestamp: new Date().toISOString(),
+      event: "batch_issue",
+      jobId: this.options.jobId,
+      batchMode: mode,
+      chunkIndex: batch.chunkIndex,
+      modelId: issue.blockId,
+      issueCode: issue.code,
+      detail: `line ${issue.lineNumber}: ${issue.line}`,
+      rawModelPayload: rawPayload,
+      requestedBlockIds: batch.items.map((item) => item.blockId),
+      finishReason: diagnostics?.finishReason ?? null,
+      stopSequences: diagnostics?.stopSequences
+    });
+    logWarn("Gemma translation payload protocol issue", {
+      mode,
+      batchIndex: batch.chunkIndex,
+      blockCount: batch.items.length,
+      issueCode: issue.code,
+      lineNumber: issue.lineNumber,
+      blockId: issue.blockId ?? null,
+      line: issue.line,
+      finishReason: diagnostics?.finishReason ?? null,
+      stopSequences: diagnostics?.stopSequences ?? []
+    });
   }
 
   private async waitForReady(): Promise<void> {
@@ -386,13 +648,23 @@ export class LlamaManager {
   }
 
   private buildStopSequences(): string[] {
-    return this.readStringEnv(
+    const rawConfig = this.readStringEnv(
       "MANGA_TRANSLATOR_STOP_SEQUENCES",
-      "```|<|turn|>|<turn|>|<|tool_response>|<|start_header_id|>|<|end_header_id|>"
-    )
+      "<end_of_turn>|<start_of_turn>user|<start_of_turn>model"
+    );
+    const parsed = rawConfig
       .split("|")
       .map((value) => value.trim())
       .filter(Boolean);
+
+    if (parsed.some((value) => value === "<" || value === ">" || value === "turn" || value === "<turn")) {
+      logWarn("Stop sequence configuration looks malformed", {
+        rawConfig,
+        parsed
+      });
+    }
+
+    return parsed;
   }
 
   private async fitBatchesToTokenBudget(
@@ -429,7 +701,7 @@ export class LlamaManager {
     const estimatedTokens =
       estimatedPromptTokens === null
         ? null
-        : estimatedPromptTokens + (batch.pageImageDataUrl ? Number(this.readStringEnv("MANGA_TRANSLATOR_PAGE_IMAGE_TOKEN_COST", "320")) : 0);
+        : estimatedPromptTokens + this.estimateVisualTokenCost(batch);
     const budget = this.getPromptTokenBudget(mode);
 
     if (estimatedTokens === null || estimatedTokens <= budget) {
@@ -596,7 +868,7 @@ export class LlamaManager {
 
   private readBatchLimits(): DocumentBatchLimits {
     return {
-      maxBlocks: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_BLOCKS", "4")),
+      maxBlocks: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_BLOCKS", "1")),
       maxPages: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_MAX_PAGES", "1")),
       maxChars: Number(this.readStringEnv("MANGA_TRANSLATOR_DOC_CHAR_LIMIT", "4500"))
     };
@@ -626,6 +898,67 @@ function findUntranslatedBlockIds(pages: MangaPage[], blockIds: string[]): strin
     }
   }
   return blockIds.filter((blockId) => !translated.has(blockId));
+}
+
+
+type CropRect = { x: number; y: number; width: number; height: number };
+
+function expandPixelRect(
+  bbox: BBox,
+  pageWidth: number,
+  pageHeight: number,
+  options: { ratio: number; minPaddingPx: number; maxPaddingPx: number }
+): CropRect {
+  const shortSide = Math.min(Math.max(1, bbox.w), Math.max(1, bbox.h));
+  const ratioPadding = Math.round(shortSide * Math.max(0, options.ratio));
+  const padding = clamp(
+    ratioPadding,
+    Math.max(0, options.minPaddingPx),
+    Math.max(options.minPaddingPx, options.maxPaddingPx)
+  );
+  const left = Math.floor(clamp(bbox.x - padding, 0, Math.max(0, pageWidth - 1)));
+  const top = Math.floor(clamp(bbox.y - padding, 0, Math.max(0, pageHeight - 1)));
+  const right = Math.ceil(clamp(bbox.x + bbox.w + padding, left + 1, pageWidth));
+  const bottom = Math.ceil(clamp(bbox.y + bbox.h + padding, top + 1, pageHeight));
+
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top)
+  };
+}
+
+function resizeCropForVision(
+  image: NativeImage,
+  options: { minSidePx: number; maxSidePx: number }
+): NativeImage {
+  const size = image.getSize();
+  if (size.width <= 0 || size.height <= 0) {
+    return image;
+  }
+
+  const shortSide = Math.min(size.width, size.height);
+  const longSide = Math.max(size.width, size.height);
+  const minSide = Math.max(1, options.minSidePx);
+  const maxSide = Math.max(minSide, options.maxSidePx);
+  let scale = 1;
+
+  if (shortSide < minSide) {
+    scale = Math.max(scale, minSide / shortSide);
+  }
+  if (longSide * scale > maxSide) {
+    scale = maxSide / longSide;
+  }
+  if (Math.abs(scale - 1) < 0.05) {
+    return image;
+  }
+
+  return image.resize({
+    width: Math.max(1, Math.round(size.width * scale)),
+    height: Math.max(1, Math.round(size.height * scale)),
+    quality: "best"
+  });
 }
 
 function tokenizeArgs(input: string): string[] {

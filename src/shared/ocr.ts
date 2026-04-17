@@ -14,8 +14,10 @@ import type {
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
-const BUBBLE_INSET_RATIO = 0.02;
-const BUBBLE_INSET_MIN_PX = 4;
+const BUBBLE_INSET_RATIO = 0.012;
+const BUBBLE_INSET_MIN_PX = 3;
+const OCR_BOX_EXPAND_RATIO = 0.12;
+const OCR_BOX_EXPAND_MIN_PX = 18;
 
 export function normalizeOcrSpans(pageId: string, rawSpans: OcrSpan[], pageSize: { width: number; height: number }): OcrSpan[] {
   return rawSpans
@@ -370,6 +372,10 @@ export function getOcrCandidateRejectionReason(
     return "empty";
   }
 
+  if (isMarkdownFenceNoise(compact)) {
+    return "markdown-fence";
+  }
+
   if (compact.includes("\uFFFD")) {
     return "replacement-char";
   }
@@ -429,7 +435,7 @@ export function getOcrCandidateRejectionReason(
 }
 
 export function normalizeOcrText(text: string): string {
-  const cleaned = text.replace(/\r/g, "").replace(/\u200b/g, "").trim();
+  const cleaned = stripOcrMarkdownFences(text).replace(/\r/g, "").replace(/\u200b/g, "").trim();
   if (!cleaned) {
     return "";
   }
@@ -439,6 +445,19 @@ export function normalizeOcrText(text: string): string {
     return compact.replace(/[ \t\n\u3000]+/g, "");
   }
   return compact;
+}
+
+function stripOcrMarkdownFences(text: string): string {
+  return text
+    .replace(/```\s*(?:markdown|text|json)?/giu, "\n")
+    .replace(/```/gu, "\n")
+    .replace(/^\s*markdown\s*$/gimu, "")
+    .trim();
+}
+
+function isMarkdownFenceNoise(text: string): boolean {
+  const compact = text.replace(/\s+/g, "").toLowerCase();
+  return /^`{3,}(?:markdown|text|json)?`{0,3}$/.test(compact) || compact === "markdown";
 }
 
 function tagFurigana(spans: OcrSpan[]): OcrSpan[] {
@@ -590,7 +609,7 @@ function buildCandidateFromGroup(
 
   const writingMode = dominantWritingMode(group);
   const ordered = [...group].sort((left, right) => compareSpans(left, right, writingMode));
-  const mergedBboxPx = expandBox(mergeBoxes(ordered.map((span) => span.bboxPx)), pageSize, 0.08, 12);
+  const mergedBboxPx = expandBox(mergeBoxes(ordered.map((span) => span.bboxPx)), pageSize, OCR_BOX_EXPAND_RATIO, OCR_BOX_EXPAND_MIN_PX);
   const bboxPx = clampPixelBox(mergedBboxPx, pageSize.width, pageSize.height);
   const sourceText = joinTexts(ordered.map((span) => span.textNormalized), writingMode);
   if (!sourceText) {

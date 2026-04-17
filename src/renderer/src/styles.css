@@ -310,6 +310,7 @@ button:hover:not(:disabled) {
   max-height: 100%;
   white-space: pre-wrap;
   text-align: inherit;
+  line-height: inherit;
   overflow-wrap: anywhere;
   word-break: break-word;
 }

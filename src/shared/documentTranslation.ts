@@ -223,7 +223,7 @@ export function normalizeGemmaTranslationItems(items: unknown): RawGemmaTranslat
 }
 
 export function sanitizeOcrModelSource(rawText: string, readingText = ""): string {
-  const normalized = rawText.replace(/\r/g, "").replace(/\u200b/g, "").trim();
+  const normalized = stripOcrMarkdownFences(rawText).replace(/\r/g, "").replace(/\u200b/g, "").trim();
   if (!normalized) {
     return "";
   }
@@ -265,16 +265,25 @@ export function sanitizeOcrModelSource(rawText: string, readingText = ""): strin
 
 export function selectModelSource(item: DocumentTranslationBatchItem): string {
   const raw = item.ocrRawText?.trim() ?? "";
-  const candidate = sanitizeOcrModelSource(raw || item.sourceText.trim(), item.readingText);
-  return candidate || raw || item.sourceText.trim();
+  const source = raw || item.sourceText.trim();
+  const candidate = sanitizeOcrModelSource(source, item.readingText);
+  const fallback = stripOcrMarkdownFences(source);
+  return candidate || fallback;
 }
 
 export function selectReadingHint(item: DocumentTranslationBatchItem): string {
+  const hints: string[] = [];
   const reading = item.readingText?.trim() ?? "";
-  if (!reading) {
-    return "";
+  if (reading && reading !== item.sourceText.trim()) {
+    hints.push(reading);
   }
-  return reading === item.sourceText.trim() ? "" : reading;
+
+  const rawReadingHints = extractReadingHintsFromRawText(item.ocrRawText || item.sourceText);
+  if (rawReadingHints) {
+    hints.push(rawReadingHints);
+  }
+
+  return uniqueCompactHints(hints).join(" ").slice(0, 100).trim();
 }
 
 export function getSuspiciousTranslationReason(
@@ -351,6 +360,63 @@ export function getSuspiciousTranslationReason(
   return null;
 }
 
+function stripOcrMarkdownFences(text: string): string {
+  return text
+    .replace(/```\s*(?:markdown|text|json)?/giu, "\n")
+    .replace(/```/gu, "\n")
+    .replace(/^\s*markdown\s*$/gimu, "")
+    .trim();
+}
+
+function extractReadingHintsFromRawText(rawText: string): string {
+  const lines = stripOcrMarkdownFences(rawText)
+    .replace(/\r/g, "")
+    .replace(/[|｜]/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const hints: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    const plain = line.replace(/[！？!?…。、「」『』（）()…・:：]/gu, "").trim();
+    const compact = compactForComparison(plain);
+    if (!compact || compact.length < 2 || compact.length > 10 || !isKanaOnly(compact)) {
+      continue;
+    }
+    const previousLine = findNonEmptyLine(lines, index, -1);
+    const nextLine = findNonEmptyLine(lines, index, 1);
+    if (!containsKanji(previousLine) && !containsKanji(nextLine)) {
+      continue;
+    }
+    hints.push(compact);
+  }
+
+  return uniqueCompactHints(hints).join(" ");
+}
+
+function uniqueCompactHints(hints: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const hint of hints) {
+    const compact = hint.replace(/\s+/g, " ").trim();
+    if (!compact) {
+      continue;
+    }
+    const key = compactForComparison(compact);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(compact);
+  }
+  return result;
+}
+
+function truncateForPayload(text: string, maxLength: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
+}
+
 function containsJapaneseScript(text: string): boolean {
   return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/u.test(text);
 }
@@ -398,12 +464,14 @@ function toCompactItem(item: DocumentTranslationBatchItem, minimal: boolean): Re
     s: modelSource,
     k: item.typeHint,
     d: item.sourceDirection,
-    ...(readingHint ? { r: readingHint } : {})
+    ...(readingHint ? { r: readingHint } : {}),
+    ...(item.rejectedReason ? { why: item.rejectedReason } : {}),
+    ...(item.rejectedOutput ? { bad: truncateForPayload(item.rejectedOutput, 90) } : {})
   };
 }
 
 function pageToBatchItems(page: MangaPage): DocumentTranslationBatchItem[] {
-  const blocks = page.blocks.filter((block) => block.sourceText.trim());
+  const blocks = page.blocks.filter((block) => buildContextPreview(block));
   return blocks.map((block, index) => ({
     ...toBatchItem(page, block),
     prevContext: buildContextPreview(blocks[index - 1]),
@@ -438,6 +506,8 @@ function toBatchItem(page: MangaPage, block: TranslationBlock): DocumentTranslat
     blockId: block.id,
     pageId: page.id,
     pageName: page.name,
+    bbox: block.bbox,
+    renderBbox: block.renderBbox,
     sourceText: block.sourceText,
     typeHint: block.type,
     sourceDirection: block.sourceDirection,

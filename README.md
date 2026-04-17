@@ -83,6 +83,14 @@ $env:MANGA_TRANSLATOR_DRY_MULTIPLIER="1.0"
 $env:MANGA_TRANSLATOR_DRY_ALLOWED_LENGTH="2"
 $env:MANGA_TRANSLATOR_TOP_P="0.9"
 $env:MANGA_TRANSLATOR_STOP_SEQUENCES="<end_of_turn>|<start_of_turn>user|<start_of_turn>model"
+$env:MANGA_TRANSLATOR_ATTACH_BLOCK_CROPS="1"
+$env:MANGA_TRANSLATOR_MAX_BLOCK_CROPS="0"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_PADDING_RATIO="0.22"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_MIN_PADDING_PX="24"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_MAX_PADDING_PX="96"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_MIN_SIDE_PX="256"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_MAX_SIDE_PX="1024"
+$env:MANGA_TRANSLATOR_ATTACH_PAGE_IMAGE="0"
 ```
 
 ## Detection And Layout
@@ -146,27 +154,32 @@ If `MANGA_TRANSLATOR_GLMOCR_PARSE_COMMAND` is not set and `scripts/glmocr_worker
 
 ## Gemma Document Translation
 
-Gemma no longer reads page images directly in the main pipeline.
-Instead it receives OCR text batches for the current document with stable `blockId`s.
+Gemma receives OCR text batches for the current document with stable `blockId`s and, by default, an image crop for each translated block. The crop is intentionally small and labeled as `CROP b1`, `CROP b2`, and so on, so Gemma can verify glyphs when GLM-OCR mixes furigana/kana hints into the main text.
+
+The full page image is off by default because it can tempt the model to borrow another speech bubble. Re-enable it only when you need broader scene context.
 
 The translation payload now includes:
 
 - sanitized OCR source text
-- optional reading hints
+- optional furigana/reading hints extracted from raw OCR
+- matching per-block crop images
 - short previous/next block context
-- retry context when a previous output was rejected
+- retry context when a previous output was rejected or omitted
 
 Useful overrides:
 
 ```powershell
-$env:MANGA_TRANSLATOR_DOC_MAX_BLOCKS="12"
-$env:MANGA_TRANSLATOR_DOC_MAX_PAGES="3"
+$env:MANGA_TRANSLATOR_DOC_MAX_BLOCKS="1"
+$env:MANGA_TRANSLATOR_DOC_MAX_PAGES="1"
 $env:MANGA_TRANSLATOR_DOC_CHAR_LIMIT="4500"
 $env:MANGA_TRANSLATOR_GLOSSARY_LIMIT="8"
+$env:MANGA_TRANSLATOR_ATTACH_BLOCK_CROPS="1"
+$env:MANGA_TRANSLATOR_ATTACH_PAGE_IMAGE="0"
+$env:MANGA_TRANSLATOR_BLOCK_CROP_TOKEN_COST="280"
+$env:MANGA_TRANSLATOR_PAGE_IMAGE_TOKEN_COST="320"
 ```
 
-Large documents are chunked by page order, block count, character budget, and tokenizer estimate before Gemma sees them.
-If Gemma omits ids, returns malformed JSON, or produces suspiciously short output, the app retries with smaller batches and then single-block retries when needed.
+Large documents are chunked by page order, block count, character budget, tokenizer estimate, and estimated visual-token cost before Gemma sees them. The default block count is `1`, so Gemma answers one translation target at a time while still receiving short same-page context when available. If Gemma omits ids or a response is rejected for repeated characters, source-copying, Japanese leakage, or similar issues, the app retries the affected ids as a smaller group and then as single-block retries when needed.
 
 ## Inpainting Without ComfyUI
 
@@ -188,6 +201,6 @@ If `QWEN_INPAINT_COMMAND` is not set, the app skips inpainting and keeps the tra
 
 - Speech bubbles always render Korean horizontally.
 - SFX/sign/caption/handwriting blocks may stay vertical or rotated.
-- OCR raw text is sanitized before it is sent to Gemma, while the editor still keeps the editable OCR source separately.
+- OCR raw text is sanitized before it is sent to Gemma, while the editor still keeps the editable OCR source separately. Markdown/code-fence OCR noise is dropped instead of being translated from context.
 - Per-block translation traces are always written to `translation-trace.jsonl`.
 - Starting translation again after existing work shows an overwrite confirmation.

@@ -72,6 +72,35 @@ const pageB: MangaPage = {
   ]
 };
 
+const denseSinglePage: MangaPage = {
+  ...pageA,
+  id: "page-dense",
+  name: "003.png",
+  blocks: [
+    {
+      ...pageA.blocks[0],
+      id: "page-dense-block-001",
+      sourceText: "첫 번째 대사",
+      ocrRawText: "첫 번째 대사",
+      readingText: undefined
+    },
+    {
+      ...pageA.blocks[0],
+      id: "page-dense-block-002",
+      sourceText: "두 번째 대사",
+      ocrRawText: "두 번째 대사",
+      readingText: undefined
+    },
+    {
+      ...pageA.blocks[0],
+      id: "page-dense-block-003",
+      sourceText: "세 번째 대사",
+      ocrRawText: "세 번째 대사",
+      readingText: undefined
+    }
+  ]
+};
+
 describe("document translation batching", () => {
   it("skips nearby-page reference context when the target page signal is too small", () => {
     const batches = buildDocumentTranslationBatches(
@@ -109,6 +138,31 @@ describe("document translation batching", () => {
     expect(batches[0].chunkIndex).toBe(1);
     expect(batches.at(-1)?.totalChunks).toBe(batches.length);
     expect(new Set(batches[0].items.map((item) => item.pageId)).size).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps same-page context when batching one block at a time", () => {
+    const batches = buildDocumentTranslationBatches([denseSinglePage], {
+      maxBlocks: 1,
+      maxPages: 1,
+      maxChars: 9000
+    });
+
+    expect(batches).toHaveLength(3);
+    expect(batches.every((batch) => batch.items.length === 1)).toBe(true);
+    expect(batches[0].referenceContext).toEqual([
+      {
+        relation: "same",
+        pageName: "003.png",
+        snippets: ["두 번째 대사"]
+      }
+    ]);
+    expect(batches[1].referenceContext).toEqual([
+      {
+        relation: "same",
+        pageName: "003.png",
+        snippets: ["첫 번째 대사"]
+      }
+    ]);
   });
 
   it("chunks retry groups into at most eight items", () => {

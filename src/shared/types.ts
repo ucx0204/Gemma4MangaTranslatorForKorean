@@ -136,6 +136,9 @@ export type DocumentTranslationBatchItem = {
   modelId?: string;
   pageId: string;
   pageName: string;
+  bbox?: BBox;
+  renderBbox?: BBox;
+  cropImageDataUrl?: string;
   sourceText: string;
   typeHint: BlockType;
   sourceDirection: TextDirection;

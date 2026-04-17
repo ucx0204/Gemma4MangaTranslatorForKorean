@@ -177,8 +177,8 @@ describe("OCR normalization and block building", () => {
     );
 
     expect(candidates).toHaveLength(1);
-    expect(candidates[0].bboxPx).toEqual({ x: 106, y: 186, w: 208, h: 208 });
-    expect(candidates[0].renderBboxPx).toEqual({ x: 86, y: 146, w: 308, h: 348 });
+    expect(candidates[0].bboxPx).toEqual({ x: 98, y: 178, w: 224, h: 224 });
+    expect(candidates[0].renderBboxPx).toEqual({ x: 84, y: 144, w: 312, h: 352 });
     expect(candidates[0].detectedTextRegionId).toBe("page-1-text-001");
     expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-001");
   });
@@ -234,7 +234,7 @@ describe("OCR normalization and block building", () => {
     expect(candidates.map((candidate) => candidate.sourceText).sort()).toEqual(["まだだ", "生きて"]);
     const orphanCandidate = candidates.find((candidate) => candidate.sourceText === "まだだ");
     expect(orphanCandidate?.detectedTextRegionId).toBeUndefined();
-    expect(orphanCandidate?.bboxPx).toEqual({ x: 508, y: 628, w: 134, h: 204 });
+    expect(orphanCandidate?.bboxPx).toEqual({ x: 502, y: 622, w: 146, h: 216 });
     expect(orphanCandidate?.renderBboxPx).toBeUndefined();
   });
 
@@ -330,7 +330,7 @@ describe("OCR normalization and block building", () => {
 
     expect(candidates).toHaveLength(1);
     expect(candidates[0].detectedBubbleRegionId).toBe("page-1-bubble-009");
-    expect(candidates[0].renderBboxPx).toEqual({ x: 484, y: 584, w: 212, h: 312 });
+    expect(candidates[0].renderBboxPx).toEqual({ x: 483, y: 583, w: 214, h: 314 });
     expect(candidates[0].typeHint).toBe("speech");
   });
 

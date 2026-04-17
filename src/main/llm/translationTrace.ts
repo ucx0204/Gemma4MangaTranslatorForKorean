@@ -4,7 +4,7 @@ import type { GemmaRequestMode } from "../../shared/types";
 
 export type TranslationTraceEntry = {
   timestamp: string;
-  event?: "request" | "response" | "rejected" | "batch_issue";
+  event?: "request" | "response" | "rejected" | "batch_issue" | "batch_response";
   jobId: string;
   pageId?: string;
   pageName?: string;
@@ -29,6 +29,8 @@ export type TranslationTraceEntry = {
   requestedBlockIds?: string[];
   detail?: string;
   issueCode?: string;
+  finishReason?: string | null;
+  stopSequences?: string[];
 };
 
 const DEFAULT_TRACE_PATH = join(process.cwd(), "logs", "translation-trace.jsonl");

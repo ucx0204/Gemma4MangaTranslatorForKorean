@@ -3,9 +3,10 @@ import { bboxToPixels, clamp, resolveBlockRenderBbox } from "../../../shared/geo
 
 const MIN_FONT_SIZE_PX = 8;
 const MAX_AUTOFIT_FONT_SIZE_PX = 256;
-const MIN_BLOCK_PADDING_PX = 2;
-const MAX_BLOCK_PADDING_PX = 8;
+const MIN_BLOCK_PADDING_PX = 3;
+const MAX_BLOCK_PADDING_PX = 12;
 const MIN_INNER_SIZE_PX = 12;
+const TEXT_FIT_SAFETY_PX = 3;
 
 let measureCanvas: HTMLCanvasElement | null = null;
 
@@ -26,6 +27,8 @@ export type BlockTextLayout = {
   paddingPx: number;
   innerWidth: number;
   innerHeight: number;
+  fitInnerWidth: number;
+  fitInnerHeight: number;
   fontSizePx: number;
   overflow: boolean;
 };
@@ -62,7 +65,7 @@ export function resolveOverlayFontSizePx(block: TranslationBlock, text: string, 
 }
 
 export function resolveBlockPaddingPx(rect: PixelRect): number {
-  return Math.round(clamp(Math.min(rect.width, rect.height) * 0.06, MIN_BLOCK_PADDING_PX, MAX_BLOCK_PADDING_PX));
+  return Math.round(clamp(Math.min(rect.width, rect.height) * 0.08, MIN_BLOCK_PADDING_PX, MAX_BLOCK_PADDING_PX));
 }
 
 export function resolveBlockTextLayout(
@@ -75,18 +78,22 @@ export function resolveBlockTextLayout(
   const paddingPx = resolveBlockPaddingPx(rect);
   const innerWidth = Math.max(MIN_INNER_SIZE_PX, rect.width - paddingPx * 2);
   const innerHeight = Math.max(MIN_INNER_SIZE_PX, rect.height - paddingPx * 2);
+  const fitInnerWidth = Math.max(MIN_INNER_SIZE_PX, innerWidth - TEXT_FIT_SAFETY_PX * 2);
+  const fitInnerHeight = Math.max(MIN_INNER_SIZE_PX, innerHeight - TEXT_FIT_SAFETY_PX * 2);
   const scale = Math.min(stageSize.width / Math.max(1, pageSize.width), stageSize.height / Math.max(1, pageSize.height));
   const preferredFontSize = Math.max(MIN_FONT_SIZE_PX, Math.floor(block.fontSizePx * scale));
-  const maxFontSize = resolveAutoFitUpperBound(block, preferredFontSize, innerWidth, innerHeight);
-  const fontSizePx = resolveTextFontSizePx(block, text, maxFontSize, innerWidth, innerHeight);
+  const maxFontSize = resolveAutoFitUpperBound(block, preferredFontSize, fitInnerWidth, fitInnerHeight);
+  const fontSizePx = resolveTextFontSizePx(block, text, maxFontSize, fitInnerWidth, fitInnerHeight);
 
   return {
     rect,
     paddingPx,
     innerWidth,
     innerHeight,
+    fitInnerWidth,
+    fitInnerHeight,
     fontSizePx,
-    overflow: text.trim() ? !doesTextFit(block, text, fontSizePx, innerWidth, innerHeight) : false
+    overflow: text.trim() ? !doesTextFit(block, text, fontSizePx, fitInnerWidth, fitInnerHeight) : false
   };
 }
 
@@ -114,7 +121,7 @@ export function hexToRgba(hex: string, alpha: number): string {
 function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, width: number, height: number): void {
   const displayText = block.translatedText || block.sourceText || "...";
   const layout = resolveBlockTextLayout(block, displayText, { width, height }, { width, height });
-  const { rect, paddingPx, innerWidth, innerHeight, fontSizePx } = layout;
+  const { rect, paddingPx, fitInnerWidth, fitInnerHeight, fontSizePx } = layout;
   context.save();
   context.fillStyle = hexToRgba(block.backgroundColor, block.opacity);
   context.fillRect(rect.left, rect.top, rect.width, rect.height);
@@ -122,31 +129,48 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
   context.font = buildFont(fontSizePx);
   context.textBaseline = "top";
   context.textAlign = block.textAlign;
-  const wrapped = block.renderDirection === "vertical" ? null : measureWrappedText(context, displayText, innerWidth, fontSizePx * block.lineHeight);
+  const wrapped = block.renderDirection === "vertical" ? null : measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
   const textX =
     block.textAlign === "left"
-      ? rect.left + paddingPx
+      ? rect.left + paddingPx + TEXT_FIT_SAFETY_PX
       : block.textAlign === "right"
-        ? rect.left + rect.width - paddingPx
+        ? rect.left + rect.width - paddingPx - TEXT_FIT_SAFETY_PX
         : rect.left + rect.width / 2;
   const startY =
     rect.top +
     paddingPx +
+    TEXT_FIT_SAFETY_PX +
     Math.max(
       0,
-      (innerHeight - (wrapped ? wrapped.totalHeight : estimateVerticalContentHeight(displayText, fontSizePx, innerHeight))) / 2
+      (fitInnerHeight - (wrapped ? wrapped.totalHeight : estimateVerticalContentHeight(displayText, fontSizePx, fitInnerHeight))) / 2
     );
 
   if (block.renderDirection === "vertical") {
-    drawVerticalText(context, displayText, rect.left + paddingPx, startY, innerWidth, innerHeight, fontSizePx);
+    drawVerticalText(
+      context,
+      displayText,
+      rect.left + paddingPx + TEXT_FIT_SAFETY_PX,
+      startY,
+      fitInnerWidth,
+      fitInnerHeight,
+      fontSizePx
+    );
   } else if (block.renderDirection === "rotated") {
     context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
     context.rotate((-8 * Math.PI) / 180);
-    const rotatedWrapped = measureWrappedText(context, displayText, innerWidth, fontSizePx * block.lineHeight);
-    const rotatedStartY = -rect.height / 2 + paddingPx + Math.max(0, (innerHeight - rotatedWrapped.totalHeight) / 2);
-    drawWrappedText(context, rotatedWrapped.lines, textX - (rect.left + rect.width / 2), rotatedStartY, innerWidth, fontSizePx * block.lineHeight, block.textAlign);
+    const rotatedWrapped = measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
+    const rotatedStartY = -rect.height / 2 + paddingPx + TEXT_FIT_SAFETY_PX + Math.max(0, (fitInnerHeight - rotatedWrapped.totalHeight) / 2);
+    drawWrappedText(
+      context,
+      rotatedWrapped.lines,
+      textX - (rect.left + rect.width / 2),
+      rotatedStartY,
+      fitInnerWidth,
+      fontSizePx * block.lineHeight,
+      block.textAlign
+    );
   } else {
-    drawWrappedText(context, wrapped?.lines ?? [displayText], textX, startY, innerWidth, fontSizePx * block.lineHeight, block.textAlign);
+    drawWrappedText(context, wrapped?.lines ?? [displayText], textX, startY, fitInnerWidth, fontSizePx * block.lineHeight, block.textAlign);
   }
   context.restore();
 }
