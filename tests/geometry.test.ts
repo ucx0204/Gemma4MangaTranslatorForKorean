@@ -22,9 +22,10 @@ describe("geometry and block normalization", () => {
     });
   });
 
-  it("forces speech bubbles to horizontal Korean lettering", () => {
-    expect(enforceRenderDirection("speech", "vertical")).toBe("horizontal");
-    expect(enforceRenderDirection("sfx", "vertical")).toBe("vertical");
+  it("keeps only horizontal, rotated, or hidden render directions", () => {
+    expect(enforceRenderDirection("speech", "horizontal")).toBe("horizontal");
+    expect(enforceRenderDirection("sfx", "rotated")).toBe("rotated");
+    expect(enforceRenderDirection("caption", "hidden")).toBe("hidden");
   });
 
   it("falls back to the stored bbox when a dedicated render box is missing", () => {
@@ -111,7 +112,7 @@ describe("geometry and block normalization", () => {
     expect(duplicated.renderBbox).toEqual({ x: 96, y: 106, w: 220, h: 260 });
   });
 
-  it("normalizes Gemma output and preserves non-speech direction", () => {
+  it("normalizes Gemma output to horizontal visible text layout", () => {
     const raw: RawGemmaAnalysis = {
       blocks: [
         {
@@ -134,7 +135,7 @@ describe("geometry and block normalization", () => {
     const blocks = normalizeGemmaAnalysis(raw, { width: 1000, height: 1400 });
     expect(blocks).toHaveLength(2);
     expect(blocks[0].renderDirection).toBe("horizontal");
-    expect(blocks[1].renderDirection).toBe("vertical");
+    expect(blocks[1].renderDirection).toBe("horizontal");
   });
 
   it("requires restart confirmation only when idle work exists", () => {

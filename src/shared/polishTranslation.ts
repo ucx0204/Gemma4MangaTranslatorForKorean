@@ -5,7 +5,14 @@ import {
   normalizeGemmaTranslationItems,
   selectModelSource
 } from "./documentTranslation";
-import type { BlockType, MangaPage, RawGemmaTranslationBatch, RawGemmaTranslationItem, TextDirection, TranslationBlock } from "./types";
+import type {
+  BlockType,
+  MangaPage,
+  RawGemmaTranslationBatch,
+  RawGemmaTranslationItem,
+  SourceTextDirection,
+  TranslationBlock
+} from "./types";
 
 const DEFAULT_STYLE_LIMIT = 16;
 const DEFAULT_OVERLAP_ITEMS = 12;
@@ -20,7 +27,7 @@ export type PolishTranslationItem = {
   pageBlockIndex: number;
   documentIndex: number;
   typeHint: BlockType;
-  sourceDirection: TextDirection;
+  sourceDirection: SourceTextDirection;
   sourceText: string;
   translatedText: string;
   repairReason?: string;

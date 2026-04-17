@@ -5,7 +5,8 @@ import {
   estimateBlockFontSizePx,
   normalizeBlockType,
   normalizeColor,
-  normalizeDirection,
+  normalizeRenderDirection,
+  normalizeSourceDirection,
   normalizeTextAlign
 } from "./geometry";
 import type {
@@ -168,10 +169,10 @@ export function applyTranslationBatchToPages(pages: MangaPage[], items: RawGemma
       }
 
       const type = normalizeBlockType(item.type ?? block.type);
-      const sourceDirection = normalizeDirection(item.sourceDirection ?? item.source_direction ?? block.sourceDirection, block.sourceDirection);
+      const sourceDirection = normalizeSourceDirection(item.sourceDirection ?? item.source_direction ?? block.sourceDirection, block.sourceDirection);
       const renderDirection = enforceRenderDirection(
         type,
-        normalizeDirection(item.renderDirection ?? item.render_direction ?? item.dir ?? item.rd ?? sourceDirection, sourceDirection)
+        normalizeRenderDirection(item.renderDirection ?? item.render_direction ?? item.dir ?? item.rd ?? block.renderDirection, block.renderDirection)
       );
       const translatedText = String(
         item.translatedText ?? item.translated_text ?? item.translation ?? item.translated ?? inferCompactTranslation(item) ?? ""

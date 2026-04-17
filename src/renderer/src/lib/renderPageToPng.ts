@@ -129,7 +129,7 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
   context.font = buildFont(fontSizePx);
   context.textBaseline = "top";
   context.textAlign = block.textAlign;
-  const wrapped = block.renderDirection === "vertical" ? null : measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
+  const wrapped = measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
   const textX =
     block.textAlign === "left"
       ? rect.left + paddingPx + TEXT_FIT_SAFETY_PX
@@ -140,22 +140,9 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
     rect.top +
     paddingPx +
     TEXT_FIT_SAFETY_PX +
-    Math.max(
-      0,
-      (fitInnerHeight - (wrapped ? wrapped.totalHeight : estimateVerticalContentHeight(displayText, fontSizePx, fitInnerHeight))) / 2
-    );
+    Math.max(0, (fitInnerHeight - wrapped.totalHeight) / 2);
 
-  if (block.renderDirection === "vertical") {
-    drawVerticalText(
-      context,
-      displayText,
-      rect.left + paddingPx + TEXT_FIT_SAFETY_PX,
-      startY,
-      fitInnerWidth,
-      fitInnerHeight,
-      fontSizePx
-    );
-  } else if (block.renderDirection === "rotated") {
+  if (block.renderDirection === "rotated") {
     context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
     context.rotate((-8 * Math.PI) / 180);
     const rotatedWrapped = measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
@@ -170,7 +157,7 @@ function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, w
       block.textAlign
     );
   } else {
-    drawWrappedText(context, wrapped?.lines ?? [displayText], textX, startY, fitInnerWidth, fontSizePx * block.lineHeight, block.textAlign);
+    drawWrappedText(context, wrapped.lines, textX, startY, fitInnerWidth, fontSizePx * block.lineHeight, block.textAlign);
   }
   context.restore();
 }
@@ -187,27 +174,6 @@ function drawWrappedText(
   context.textAlign = align;
   for (const [index, line] of lines.entries()) {
     context.fillText(line, x, y + index * lineHeight, maxWidth);
-  }
-}
-
-function drawVerticalText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  x: number,
-  y: number,
-  maxWidth: number,
-  maxHeight: number,
-  fontSize: number
-): void {
-  const layout = layoutVerticalColumns(text, fontSize, maxHeight);
-  const rightEdge = x + maxWidth;
-  const contentHeight = estimateVerticalContentHeight(text, fontSize, maxHeight);
-  const top = y + Math.max(0, (maxHeight - contentHeight) / 2);
-  for (const [columnIndex, column] of layout.columns.entries()) {
-    const columnX = rightEdge - fontSize / 2 - columnIndex * fontSize;
-    for (const [rowIndex, char] of column.entries()) {
-      context.fillText(char, columnX, top + rowIndex * layout.advance);
-    }
   }
 }
 
@@ -250,12 +216,6 @@ function resolveTextFontSizePx(
 function doesTextFit(block: TranslationBlock, text: string, fontSize: number, innerWidth: number, innerHeight: number): boolean {
   const context = getMeasureContext();
   context.font = buildFont(fontSize);
-
-  if (block.renderDirection === "vertical") {
-    const layout = layoutVerticalColumns(text, fontSize, innerHeight);
-    return layout.width <= innerWidth;
-  }
-
   return measureWrappedText(context, text, innerWidth, fontSize * block.lineHeight).totalHeight <= innerHeight;
 }
 
@@ -301,29 +261,6 @@ function measureWrappedText(
     lines,
     totalHeight: lines.length * lineHeight
   };
-}
-
-function layoutVerticalColumns(text: string, fontSize: number, maxHeight: number): { columns: string[][]; width: number; advance: number } {
-  const chars = [...text.replace(/\s+/g, "")];
-  const advance = fontSize * 1.05;
-  const maxRows = Math.max(1, Math.floor(maxHeight / Math.max(1, advance)));
-  const columns: string[][] = [];
-
-  for (let index = 0; index < chars.length; index += maxRows) {
-    columns.push(chars.slice(index, index + maxRows));
-  }
-
-  return {
-    columns: columns.length > 0 ? columns : [[]],
-    width: Math.max(1, columns.length) * fontSize,
-    advance
-  };
-}
-
-function estimateVerticalContentHeight(text: string, fontSize: number, maxHeight: number): number {
-  const layout = layoutVerticalColumns(text, fontSize, maxHeight);
-  const rowCount = Math.max(...layout.columns.map((column) => column.length), 1);
-  return rowCount <= 1 ? fontSize : fontSize + (rowCount - 1) * layout.advance;
 }
 
 function resolveAutoFitUpperBound(block: TranslationBlock, preferredFontSize: number, innerWidth: number, innerHeight: number): number {

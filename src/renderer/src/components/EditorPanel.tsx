@@ -1,5 +1,5 @@
 import React from "react";
-import type { TextDirection, TranslationBlock } from "../../../shared/types";
+import type { RenderTextDirection, TranslationBlock } from "../../../shared/types";
 
 type EditorPanelProps = {
   block: TranslationBlock | null;
@@ -45,11 +45,10 @@ export function EditorPanel({ block, disabled, onUpdate, onDelete, onDuplicate }
         Direction
         <select
           value={block.renderDirection}
-          disabled={disabled || block.type === "speech"}
-          onChange={(event) => onUpdate({ renderDirection: event.target.value as TextDirection })}
+          disabled={disabled}
+          onChange={(event) => onUpdate({ renderDirection: event.target.value as RenderTextDirection })}
         >
           <option value="horizontal">horizontal</option>
-          <option value="vertical">vertical</option>
           <option value="rotated">rotated</option>
           <option value="hidden">hidden</option>
         </select>

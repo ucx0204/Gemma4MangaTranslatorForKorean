@@ -1,5 +1,14 @@
 import { existsSync } from "node:fs";
-import { clamp, clampBbox, enforceRenderDirection, normalizeBlockType, normalizeColor, normalizeDirection, normalizeTextAlign } from "../shared/geometry";
+import {
+  clamp,
+  clampBbox,
+  enforceRenderDirection,
+  normalizeBlockType,
+  normalizeColor,
+  normalizeRenderDirection,
+  normalizeSourceDirection,
+  normalizeTextAlign
+} from "../shared/geometry";
 import type { InpaintSettings, MangaPage, MangaProject, TranslationBlock } from "../shared/types";
 
 const DEFAULT_INPAINT: InpaintSettings = {
@@ -83,8 +92,8 @@ function normalizeBlock(
   }
 
   const type = normalizeBlockType(input.type);
-  const sourceDirection = normalizeDirection(input.sourceDirection, "vertical");
-  const renderDirection = enforceRenderDirection(type, normalizeDirection(input.renderDirection, sourceDirection));
+  const sourceDirection = normalizeSourceDirection(input.sourceDirection, "vertical");
+  const renderDirection = enforceRenderDirection(type, normalizeRenderDirection(input.renderDirection, "horizontal"));
   const rawBbox = {
     x: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.x : 0, 0),
     y: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.y : 0, 0),

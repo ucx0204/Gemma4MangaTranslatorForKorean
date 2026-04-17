@@ -1,4 +1,12 @@
-import type { BBox, BlockType, RawGemmaAnalysis, RawGemmaBlock, TextDirection, TranslationBlock } from "./types";
+import type {
+  BBox,
+  BlockType,
+  RawGemmaAnalysis,
+  RawGemmaBlock,
+  RenderTextDirection,
+  SourceTextDirection,
+  TranslationBlock
+} from "./types";
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
@@ -43,8 +51,8 @@ export function resolveBlockRenderBbox(block: Pick<TranslationBlock, "bbox" | "r
   return clampBbox(block.bbox);
 }
 
-export function defaultLineHeightForRenderDirection(direction: TextDirection): number {
-  return direction === "vertical" ? 1.05 : 1.18;
+export function defaultLineHeightForRenderDirection(direction: RenderTextDirection): number {
+  return 1.18;
 }
 
 export function estimateBlockFontSizePx(
@@ -104,8 +112,8 @@ export function normalizeGemmaAnalysis(raw: RawGemmaAnalysis, pageSize: { width:
   return blocks.map((block, index) => normalizeGemmaBlock(block, index, pageSize)).filter(Boolean) as TranslationBlock[];
 }
 
-export function enforceRenderDirection(type: BlockType, direction: TextDirection): TextDirection {
-  return type === "speech" ? "horizontal" : direction;
+export function enforceRenderDirection(_type: BlockType, direction: RenderTextDirection): RenderTextDirection {
+  return direction;
 }
 
 export function normalizeBlockType(value: unknown): BlockType {
@@ -128,13 +136,18 @@ export function normalizeBlockType(value: unknown): BlockType {
   return "other";
 }
 
-export function normalizeDirection(value: unknown, fallback: TextDirection): TextDirection {
+export function normalizeSourceDirection(value: unknown, fallback: SourceTextDirection): SourceTextDirection {
   const text = String(value ?? "").trim().toLowerCase();
-  if (["horizontal", "vertical", "rotated", "hidden"].includes(text)) {
-    return text as TextDirection;
+  if (text === "horizontal" || text === "vertical") {
+    return text as SourceTextDirection;
   }
-  if (["vertical-rl", "vertical_lr", "vertical-lr"].includes(text)) {
-    return "vertical";
+  return fallback;
+}
+
+export function normalizeRenderDirection(value: unknown, fallback: RenderTextDirection): RenderTextDirection {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (text === "horizontal" || text === "rotated" || text === "hidden") {
+    return text as RenderTextDirection;
   }
   return fallback;
 }
@@ -171,8 +184,8 @@ function normalizeGemmaBlock(raw: RawGemmaBlock, index: number, pageSize: { widt
   const type = normalizeBlockType(raw.type);
   const sourceText = String(raw.sourceText ?? raw.source_text ?? "").trim();
   const translatedText = String(raw.translatedText ?? raw.translated_text ?? raw.translation ?? "").trim();
-  const sourceDirection = normalizeDirection(raw.sourceDirection ?? raw.source_direction, "vertical");
-  const rawRenderDirection = normalizeDirection(raw.renderDirection ?? raw.render_direction, sourceDirection);
+  const sourceDirection = normalizeSourceDirection(raw.sourceDirection ?? raw.source_direction, "vertical");
+  const rawRenderDirection = normalizeRenderDirection(raw.renderDirection ?? raw.render_direction, "horizontal");
   const renderDirection = enforceRenderDirection(type, rawRenderDirection);
   const normalizedBbox = clampBbox(bbox);
   const normalizedRenderBbox = renderBbox ? clampBbox(renderBbox) : undefined;

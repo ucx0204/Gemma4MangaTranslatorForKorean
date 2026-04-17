@@ -42,10 +42,10 @@ export function OverlayBlock({
     overflow: layout.overflow ? "visible" : "hidden"
   };
   const contentStyle: React.CSSProperties = {
-    writingMode: block.renderDirection === "vertical" ? "vertical-rl" : "horizontal-tb",
+    writingMode: "horizontal-tb",
     transform: block.renderDirection === "rotated" ? "rotate(-8deg)" : undefined,
     transformOrigin: "center center",
-    width: block.renderDirection === "vertical" ? "auto" : "100%",
+    width: "100%",
     maxHeight: layout.overflow ? "none" : "100%"
   };
 

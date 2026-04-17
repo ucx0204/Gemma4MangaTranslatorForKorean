@@ -1,6 +1,7 @@
 export type BlockType = "speech" | "sfx" | "sign" | "caption" | "handwriting" | "other";
 
-export type TextDirection = "horizontal" | "vertical" | "rotated" | "hidden";
+export type SourceTextDirection = "horizontal" | "vertical";
+export type RenderTextDirection = "horizontal" | "rotated" | "hidden";
 
 export type JobKind = "gemma-analysis" | "inpaint";
 
@@ -30,8 +31,8 @@ export type TranslationBlock = {
   sourceText: string;
   translatedText: string;
   confidence: number;
-  sourceDirection: TextDirection;
-  renderDirection: TextDirection;
+  sourceDirection: SourceTextDirection;
+  renderDirection: RenderTextDirection;
   fontSizePx: number;
   lineHeight: number;
   textAlign: "left" | "center" | "right";
@@ -142,7 +143,7 @@ export type DocumentTranslationBatchItem = {
   cropImageDataUrl?: string;
   sourceText: string;
   typeHint: BlockType;
-  sourceDirection: TextDirection;
+  sourceDirection: SourceTextDirection;
   readingText?: string;
   ocrRawText?: string;
   ocrConfidence?: number;

@@ -8,7 +8,7 @@ import type {
   OcrBlockCandidate,
   OcrSpan,
   OcrWritingMode,
-  TextDirection,
+  SourceTextDirection,
   TranslationBlock
 } from "./types";
 
@@ -332,9 +332,9 @@ function oversizeBubblePenalty(bubbleAreaRatio: number, pageAreaRatio: number): 
 export function ocrCandidatesToTranslationBlocks(page: AnalysisRequestPage, candidates: OcrBlockCandidate[]): TranslationBlock[] {
   return candidates.map((candidate) => {
     const rawSourceText = candidate.ocrRawText?.trim() || candidate.sourceText;
-    const sourceDirection: TextDirection = candidate.writingMode === "vertical" ? "vertical" : "horizontal";
+    const sourceDirection: SourceTextDirection = candidate.writingMode === "vertical" ? "vertical" : "horizontal";
     const type = candidate.typeHint;
-    const renderDirection = enforceRenderDirection(type, sourceDirection);
+    const renderDirection = enforceRenderDirection(type, "horizontal");
     const bbox = pixelsToBbox(candidate.bboxPx, page.width, page.height);
     const renderBbox = candidate.renderBboxPx ? pixelsToBbox(candidate.renderBboxPx, page.width, page.height) : undefined;
     const baseText = rawSourceText || candidate.readingText || "";
