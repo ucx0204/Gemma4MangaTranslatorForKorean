@@ -421,15 +421,21 @@ describe("document translation batching", () => {
     expect(getSuspiciousTranslationReason("ありがとうおかげで答えは出たわ", "ありがとう、おかげで答えは出たわ")).toBe("contains-japanese-script");
   });
 
-  it("sanitizes noisy OCR input for the model while preserving readable clauses", () => {
+  it("sanitizes OCR input conservatively without deleting kana lines", () => {
     expect(
       sanitizeOcrModelSource("上位種が\n\nせんめつ\n\n全減したのは\n\nしかた\n仕方ありません\n…ですが\n\nシリウス司教\n\nしあう", "せんめつしかたしあう")
-    ).toBe("上位種が\n全減したのは\n仕方ありません\n…ですが\nシリウス司教");
+    ).toBe("上位種が\nせんめつ\n全減したのは\nしかた\n仕方ありません\n…ですが\nシリウス司教\nしあう");
   });
 
-  it("strips trailing kana echoes that bleed into the next kanji clause", () => {
+  it("keeps trailing kana fragments instead of trimming them heuristically", () => {
     expect(sanitizeOcrModelSource("弱い人の\n名前を覚える\nつもりはない わる\n⋯悪いけど", "わる⋯悪いけど")).toBe(
-      "弱い人の\n名前を覚える\nつもりはない\n⋯悪いけど"
+      "弱い人の\n名前を覚える\nつもりはない わる\n⋯悪いけど"
+    );
+  });
+
+  it("preserves short hiragana clauses like こちらで between kanji lines", () => {
+    expect(sanitizeOcrModelSource("同盟に\n\n反対している\n\n華族の情報は\n\nこちらで\n\n調査しました")).toBe(
+      "同盟に\n反対している\n華族の情報は\nこちらで\n調査しました"
     );
   });
 

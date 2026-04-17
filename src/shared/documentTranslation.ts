@@ -223,13 +223,13 @@ export function normalizeGemmaTranslationItems(items: unknown): RawGemmaTranslat
   return normalized;
 }
 
-export function sanitizeOcrModelSource(rawText: string, readingText = ""): string {
+export function sanitizeOcrModelSource(rawText: string, _readingText = ""): string {
   const normalized = stripOcrMarkdownFences(rawText).replace(/\r/g, "").replace(/\u200b/g, "").trim();
   if (!normalized) {
     return "";
   }
 
-  const readingCompact = compactForComparison(readingText);
+  const readingCompact = compactForComparison(_readingText);
   const lines = normalized
     .replace(/[|｜]/g, "\n")
     .split("\n")
@@ -237,7 +237,7 @@ export function sanitizeOcrModelSource(rawText: string, readingText = ""): strin
     .filter(Boolean);
 
   const filtered: string[] = [];
-  for (const [index, line] of lines.entries()) {
+  for (const line of lines) {
     const compact = compactForComparison(line);
     if (!compact) {
       continue;
@@ -248,17 +248,11 @@ export function sanitizeOcrModelSource(rawText: string, readingText = ""): strin
       continue;
     }
 
-    if (isKanaOnly(compact) && readingCompact && readingCompact.includes(compact)) {
+    if (isKanaOnly(compact) && readingCompact && compact === readingCompact) {
       continue;
     }
 
-    const previousLine = findNonEmptyLine(lines, index, -1);
-    const nextLine = findNonEmptyLine(lines, index, 1);
-    if (isShortKanaNoiseLine(compact, previousLine, nextLine)) {
-      continue;
-    }
-
-    filtered.push(stripTrailingKanaEcho(line, nextLine, readingCompact));
+    filtered.push(line);
   }
 
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -755,37 +749,6 @@ function findNonEmptyLine(lines: string[], startIndex: number, step: -1 | 1): st
   return "";
 }
 
-function isShortKanaNoiseLine(text: string, previousLine: string, nextLine: string): boolean {
-  const plain = text.replace(/[！？!?…。、「」『』（）()…・]/gu, "");
-  if (!plain || plain.length > 5) {
-    return false;
-  }
-  if (!isKanaOnly(plain)) {
-    return false;
-  }
-  if (/[！？!?…。]/u.test(text)) {
-    return false;
-  }
-  return containsKanji(previousLine) || containsKanji(nextLine);
-}
-
-function stripTrailingKanaEcho(line: string, nextLine: string, readingCompact: string): string {
-  const cleaned = line.replace(/\s+([ぁ-ゖァ-ヺー]{2,3})$/u, (full, tail) => {
-    if (!containsKanji(nextLine)) {
-      return full;
-    }
-    if (readingCompact && !readingCompact.includes(tail)) {
-      return full;
-    }
-    const leading = line.slice(0, Math.max(0, line.length - full.length)).trim();
-    if (!leading) {
-      return full;
-    }
-    return "";
-  });
-
-  return cleaned.trim();
-}
 
 function hasPromptLeak(text: string): boolean {
   return /```|<\|turn\|>|input_json=|retry_hints=|retry_context=|broken_json=|translatedtext|blockid|thought-<channel|json\{/iu.test(text);
