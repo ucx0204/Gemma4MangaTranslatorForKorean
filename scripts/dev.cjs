@@ -1,7 +1,6 @@
 const http = require("node:http");
 const { join } = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const { ensureGlmOcrRuntime } = require("./ensure-glmocr-runtime.cjs");
 
 const root = join(__dirname, "..");
 const rendererUrl = "http://127.0.0.1:5173";
@@ -85,12 +84,6 @@ function shutdown() {
 }
 
 (async () => {
-  const shouldBootstrapAnalysisRuntime =
-    process.env.MANGA_TRANSLATOR_SKIP_GLMOCR_BOOTSTRAP !== "1" && !process.argv.includes("--skip-glmocr-bootstrap");
-
-  if (shouldBootstrapAnalysisRuntime) {
-    ensureGlmOcrRuntime({ root });
-  }
   runSync(process.execPath, [nodeBin("typescript", "bin", "tsc"), "-p", "tsconfig.electron.json"]);
   spawnChild(process.execPath, [nodeBin("vite", "bin", "vite.js"), "--config", "vite.renderer.config.ts", "--host", "127.0.0.1"]);
   await waitForUrl(rendererUrl);

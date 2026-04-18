@@ -37,7 +37,6 @@ export function ImageStage({
         onPointerDown={onStagePointerDown}
       >
         <img ref={imageRef} className="page-image" src={page.dataUrl} alt={page.name} draggable={false} />
-        {page.cleanLayerDataUrl ? <img className="clean-layer" src={page.cleanLayerDataUrl} alt="" draggable={false} /> : null}
         {page.blocks.map((block) => (
           <OverlayBlock
             key={block.id}

@@ -27,9 +27,7 @@ export function EditorPanel({ block, disabled, onUpdate, onDelete, onDuplicate }
         <select value={block.type} disabled={disabled} onChange={(event) => onUpdate({ type: event.target.value as TranslationBlock["type"] })}>
           <option value="speech">speech</option>
           <option value="sfx">sfx</option>
-          <option value="sign">sign</option>
           <option value="caption">caption</option>
-          <option value="handwriting">handwriting</option>
           <option value="other">other</option>
         </select>
       </label>

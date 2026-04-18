@@ -1,7 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import type { BBox, InpaintSettings, JobState, MangaPage, MangaProject, TranslationBlock } from "../../shared/types";
-import { applyEditableBlockBbox, clampBbox, enforceRenderDirection, offsetBlockBboxes, resolveEditableBlockBbox, shouldConfirmRestart } from "../../shared/geometry";
-import { ConfirmRestartModal } from "./components/ConfirmRestartModal";
+import type { BBox, JobState, MangaPage, MangaProject, TranslationBlock } from "../../shared/types";
+import { applyEditableBlockBbox, clampBbox, enforceRenderDirection, offsetBlockBboxes, resolveEditableBlockBbox } from "../../shared/geometry";
 import { EditorPanel } from "./components/EditorPanel";
 import { ImageStage } from "./components/ImageStage";
 import { PageList } from "./components/PageList";
@@ -14,14 +13,6 @@ const EMPTY_JOB: JobState = {
   kind: "gemma-analysis",
   status: "idle",
   progressText: "대기 중"
-};
-
-const DEFAULT_INPAINT: InpaintSettings = {
-  enabled: false,
-  model: "qwen-image-edit-2511",
-  target: "all",
-  featherPx: 18,
-  cropPaddingPx: 48
 };
 
 type DragMode = "move" | "resize";
@@ -38,11 +29,8 @@ export default function App(): React.JSX.Element {
   const [pages, setPages] = useState<MangaPage[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [inpaintSettings, setInpaintSettings] = useState<InpaintSettings>(DEFAULT_INPAINT);
   const [jobState, setJobState] = useState<JobState>(EMPTY_JOB);
-  const [confirmRestart, setConfirmRestart] = useState(false);
   const [statusLines, setStatusLines] = useState<string[]>([]);
-  const [pendingSnapshot, setPendingSnapshot] = useState<MangaPage[] | null>(null);
   const [logPath, setLogPath] = useState<string>("");
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -51,7 +39,6 @@ export default function App(): React.JSX.Element {
   const selectedPage = useMemo(() => pages.find((page) => page.id === selectedPageId) ?? pages[0] ?? null, [pages, selectedPageId]);
   const selectedBlock = selectedPage?.blocks.find((block) => block.id === selectedBlockId) ?? null;
   const jobActive = ["starting", "running", "cancelling"].includes(jobState.status);
-  const hasWork = pages.some((page) => page.blocks.length > 0 || Boolean(page.cleanLayerDataUrl) || Boolean(page.inpaintApplied));
   const selectedPageSize = useMemo(
     () => (selectedPage ? { width: selectedPage.width, height: selectedPage.height } : null),
     [selectedPage?.height, selectedPage?.width]
@@ -84,10 +71,9 @@ export default function App(): React.JSX.Element {
     () => ({
       version: 1,
       pages,
-      selectedPageId,
-      inpaintSettings
+      selectedPageId
     }),
-    [inpaintSettings, pages, selectedPageId]
+    [pages, selectedPageId]
   );
 
   const pushStatus = useCallback((line: string) => {
@@ -145,49 +131,12 @@ export default function App(): React.JSX.Element {
     setPages(project.pages ?? []);
     setSelectedPageId(project.selectedPageId ?? project.pages?.[0]?.id ?? null);
     setSelectedBlockId(null);
-    setInpaintSettings(project.inpaintSettings ?? DEFAULT_INPAINT);
     pushStatus("프로젝트를 열었습니다.");
   };
 
-  const requestStartAnalysis = () => {
+  const startAnalysis = async () => {
     if (!pages.length || jobActive) {
       return;
-    }
-    if (shouldConfirmRestart(jobActive, hasWork)) {
-      setConfirmRestart(true);
-      return;
-    }
-    void startAnalysis(false);
-  };
-
-  const startAnalysis = async (overwrite: boolean) => {
-    if (!pages.length) {
-      return;
-    }
-
-    setConfirmRestart(false);
-    const snapshot = clonePages(pages);
-    setPendingSnapshot(snapshot);
-    const requestPages = pages.map(({ id, name, imagePath, dataUrl, width, height }) => ({
-      id,
-      name,
-      imagePath,
-      dataUrl,
-      width,
-      height
-    }));
-
-    if (overwrite) {
-      setPages((current) =>
-        current.map((page) => ({
-          ...page,
-          blocks: [],
-          cleanLayerDataUrl: null,
-          inpaintApplied: false,
-          warning: undefined
-        }))
-      );
-      setSelectedBlockId(null);
     }
 
     setJobState({
@@ -197,17 +146,21 @@ export default function App(): React.JSX.Element {
       progressText: "번역 시작"
     });
 
-    const result = await window.mangaApi.startAnalysis({
-      pages: requestPages,
-      inpaintSettings,
-      selectedBlockIds: selectedBlockId ? [selectedBlockId] : []
-    });
+    const requestPages = pages.map(({ id, name, imagePath, dataUrl, width, height }) => ({
+      id,
+      name,
+      imagePath,
+      dataUrl,
+      width,
+      height
+    }));
 
+    const result = await window.mangaApi.startAnalysis({ pages: requestPages });
     if (result.status === "completed" && result.pages) {
-      setPages(result.pages);
-      setSelectedPageId(result.pages[0]?.id ?? null);
+      const nextPages = result.pages;
+      setPages(nextPages);
+      setSelectedPageId((current) => (nextPages.some((page) => page.id === current) ? current : nextPages[0]?.id ?? null));
       setSelectedBlockId(null);
-      setPendingSnapshot(null);
       for (const warning of result.warnings ?? []) {
         pushStatus(warning);
       }
@@ -215,23 +168,15 @@ export default function App(): React.JSX.Element {
     }
 
     if (result.status === "cancelled") {
-      setPages(snapshot);
-      setPendingSnapshot(null);
-      pushStatus("작업이 취소되어 이전 상태로 복구했습니다.");
+      pushStatus("작업이 취소되었습니다.");
       return;
     }
 
-    setPages(snapshot);
-    setPendingSnapshot(null);
     pushStatus(result.error ? `작업 실패: ${result.error}` : "작업 실패");
   };
 
   const cancelJob = async () => {
     await window.mangaApi.cancelJob();
-    if (pendingSnapshot) {
-      setPages(pendingSnapshot);
-      setPendingSnapshot(null);
-    }
   };
 
   const updateSelectedBlock = (patch: Partial<TranslationBlock>) => {
@@ -249,13 +194,13 @@ export default function App(): React.JSX.Element {
                 if (block.id !== selectedBlock.id) {
                   return block;
                 }
+
                 const nextType = patch.type ?? block.type;
-                const nextDirection = enforceRenderDirection(nextType, patch.renderDirection ?? block.renderDirection);
                 return {
                   ...block,
                   ...patch,
                   type: nextType,
-                  renderDirection: nextDirection,
+                  renderDirection: enforceRenderDirection(nextType, patch.renderDirection ?? block.renderDirection),
                   bbox: patch.bbox ? clampBbox(patch.bbox) : block.bbox,
                   renderBbox: patch.renderBbox ? clampBbox(patch.renderBbox) : block.renderBbox
                 };
@@ -288,7 +233,7 @@ export default function App(): React.JSX.Element {
     }
     const copy = {
       ...offsetBlockBboxes(selectedBlock, 16, 16),
-      id: `${selectedBlock.id}-copy-${Date.now()}`,
+      id: `${selectedBlock.id}-copy-${Date.now()}`
     };
     setPages((current) =>
       current.map((page) =>
@@ -379,7 +324,7 @@ export default function App(): React.JSX.Element {
       <aside className="sidebar">
         <section className="brand">
           <h1>Gemma Manga Translator</h1>
-          <p>말풍선은 가로 역식, 나머지는 원본 레이아웃을 보존합니다.</p>
+          <p>전체 페이지를 그대로 보고 bbox와 한국어 오버레이를 바로 만듭니다.</p>
         </section>
 
         <section className="toolbar">
@@ -392,25 +337,8 @@ export default function App(): React.JSX.Element {
         </section>
 
         <section className="run-panel">
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              checked={inpaintSettings.enabled}
-              disabled={jobActive}
-              onChange={(event) => setInpaintSettings((current) => ({ ...current, enabled: event.target.checked }))}
-            />
-            <span>Clean background</span>
-          </label>
-          <select
-            value={inpaintSettings.target}
-            disabled={jobActive || !inpaintSettings.enabled}
-            onChange={(event) => setInpaintSettings((current) => ({ ...current, target: event.target.value as InpaintSettings["target"] }))}
-          >
-            <option value="all">전체 블록</option>
-            <option value="selected">선택 블록</option>
-          </select>
-          <button className="primary" onClick={requestStartAnalysis} disabled={!pages.length || jobActive}>번역 시작</button>
-          {jobActive ? <button className="danger" onClick={cancelJob}>취소</button> : null}
+          <button className="primary" onClick={() => void startAnalysis()} disabled={!pages.length || jobActive}>페이지 전체 번역</button>
+          {jobActive ? <button className="danger" onClick={() => void cancelJob()}>취소</button> : null}
         </section>
 
         <PageList
@@ -451,18 +379,12 @@ export default function App(): React.JSX.Element {
           />
         ) : (
           <div className="empty-state">
-            <h2>이미지를 열면 시작합니다.</h2>
-            <p>Gemma 4가 이미지 전체를 보고 번역 블록을 만들고, 여기서 직접 손볼 수 있습니다.</p>
+            <h2>이미지를 열면 바로 시작됩니다.</h2>
+            <p>기존 detector 없이, Gemma가 전체 페이지를 보고 블록과 번역문을 직접 만듭니다.</p>
             <button onClick={openImages}>이미지 열기</button>
           </div>
         )}
       </section>
-
-      <ConfirmRestartModal open={confirmRestart} onCancel={() => setConfirmRestart(false)} onConfirm={() => void startAnalysis(true)} />
     </main>
   );
-}
-
-function clonePages(pages: MangaPage[]): MangaPage[] {
-  return JSON.parse(JSON.stringify(pages)) as MangaPage[];
 }

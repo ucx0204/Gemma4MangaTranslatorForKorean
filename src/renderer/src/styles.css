@@ -105,22 +105,12 @@ button:hover:not(:disabled) {
   grid-template-columns: 1fr 1fr;
 }
 
-.run-panel {
+.run-panel,
+.editor-panel {
   padding: 12px;
   border: 1px solid #333841;
   border-radius: 8px;
-  background: #1e2127;
-}
-
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.toggle-row input[type="checkbox"] {
-  width: auto;
-  margin: 0;
+  background: #1c1f25;
 }
 
 .page-list h2,
@@ -130,7 +120,6 @@ button:hover:not(:disabled) {
   font-size: 13px;
   text-transform: uppercase;
   color: #d6cbbb;
-  letter-spacing: 0;
 }
 
 .page-item {
@@ -154,10 +143,6 @@ button:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.page-item.active {
-  border-radius: 6px;
-}
-
 .page-item.active .page-select {
   border-color: #78c7b2;
   background: #24443d;
@@ -169,13 +154,6 @@ button:hover:not(:disabled) {
   color: #f0c7c7;
   border-color: #5f3939;
   background: #2f2020;
-}
-
-.editor-panel {
-  padding: 12px;
-  border: 1px solid #333841;
-  border-radius: 8px;
-  background: #1b1e24;
 }
 
 .editor-panel label {
@@ -192,14 +170,24 @@ button:hover:not(:disabled) {
 
 .editor-panel input,
 .editor-panel select,
-.editor-panel textarea,
-.run-panel select {
+.editor-panel textarea {
   width: 100%;
   color: #f5f0e8;
   border: 1px solid #3d4147;
   border-radius: 6px;
   background: #111318;
   padding: 8px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
 }
 
 .color-row,
@@ -217,7 +205,8 @@ button:hover:not(:disabled) {
 }
 
 .job-pill.running,
-.job-pill.starting {
+.job-pill.starting,
+.job-pill.cancelling {
   background: #2b4d72;
 }
 
@@ -259,24 +248,13 @@ button:hover:not(:disabled) {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
-.clean-layer {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  pointer-events: none;
-}
-
 .overlay-block {
   position: absolute;
   display: grid;
   place-items: center;
-  box-sizing: border-box;
   overflow: hidden;
   border: 1px solid rgba(50, 50, 50, 0.32);
   border-radius: 4px;
-  padding: 0;
   font-weight: 700;
   white-space: pre-wrap;
   cursor: move;
@@ -340,35 +318,4 @@ button:hover:not(:disabled) {
 
 .empty-state p {
   color: #b8b1a6;
-}
-
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.55);
-}
-
-.modal {
-  width: min(440px, calc(100vw - 48px));
-  padding: 20px;
-  border: 1px solid #474b53;
-  border-radius: 8px;
-  background: #1c1f25;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-}
-
-.modal h2 {
-  margin: 0 0 8px;
-}
-
-.modal p {
-  color: #d8d0c3;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }

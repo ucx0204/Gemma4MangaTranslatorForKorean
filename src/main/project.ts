@@ -7,30 +7,19 @@ import {
   normalizeColor,
   normalizeRenderDirection,
   normalizeSourceDirection,
-  normalizeTextAlign
+  normalizeTextAlign,
+  pixelsToBbox
 } from "../shared/geometry";
-import type { InpaintSettings, MangaPage, MangaProject, TranslationBlock } from "../shared/types";
-
-const DEFAULT_INPAINT: InpaintSettings = {
-  enabled: false,
-  model: "qwen-image-edit-2511",
-  target: "all",
-  featherPx: 18,
-  cropPaddingPx: 48
-};
+import type { MangaPage, MangaProject, TranslationBlock } from "../shared/types";
 
 const DEFAULT_PAGE_WIDTH = 1000;
 const DEFAULT_PAGE_HEIGHT = 1400;
-const MAX_CLEAN_LAYER_DATA_URL_LENGTH = 16_000_000;
+const DEFAULT_TEXT_COLOR = "#111111";
+const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
 
 export function normalizeLoadedProject(input: unknown): { project: MangaProject; warnings: string[] } {
   const warnings: string[] = [];
   const raw = isRecord(input) ? input : {};
-  const version = Number(raw.version ?? 1);
-  if (version !== 1) {
-    warnings.push(`Project version ${String(raw.version ?? "unknown")} is not recognized. Falling back to v1 normalization.`);
-  }
-
   const pages = Array.isArray(raw.pages) ? raw.pages.map((page, index) => normalizePage(page, index, warnings)).filter(isPresent) : [];
   const selectedPageId = typeof raw.selectedPageId === "string" ? raw.selectedPageId : null;
 
@@ -38,8 +27,7 @@ export function normalizeLoadedProject(input: unknown): { project: MangaProject;
     project: {
       version: 1,
       pages,
-      selectedPageId,
-      inpaintSettings: normalizeInpaintSettings(raw.inpaintSettings, warnings)
+      selectedPageId
     },
     warnings
   };
@@ -56,27 +44,19 @@ function normalizePage(input: unknown, index: number, warnings: string[]): Manga
     warnings.push(`Image path is missing on disk: ${imagePath}`);
   }
 
-  const width = finiteNumber(input.width, DEFAULT_PAGE_WIDTH);
-  const height = finiteNumber(input.height, DEFAULT_PAGE_HEIGHT);
-  const rawCleanLayerDataUrl = stringOrEmpty(input.cleanLayerDataUrl);
-  const cleanLayerDataUrl =
-    rawCleanLayerDataUrl.length > MAX_CLEAN_LAYER_DATA_URL_LENGTH
-      ? (warnings.push(`Dropped oversized clean layer for page ${stringOrEmpty(input.name) || index + 1}.`), null)
-      : rawCleanLayerDataUrl || null;
+  const width = Math.max(1, Math.round(finiteNumber(input.width, DEFAULT_PAGE_WIDTH)));
+  const height = Math.max(1, Math.round(finiteNumber(input.height, DEFAULT_PAGE_HEIGHT)));
 
   return {
     id: stringOrEmpty(input.id) || `page-${index + 1}`,
     name: stringOrEmpty(input.name) || `page-${index + 1}.png`,
     imagePath,
     dataUrl: stringOrEmpty(input.dataUrl),
-    width: Math.max(1, Math.round(width)),
-    height: Math.max(1, Math.round(height)),
+    width,
+    height,
     blocks: Array.isArray(input.blocks)
       ? input.blocks.map((block, blockIndex) => normalizeBlock(block, blockIndex, warnings, { width, height })).filter(isPresent)
-      : [],
-    cleanLayerDataUrl,
-    inpaintApplied: Boolean(input.inpaintApplied ?? cleanLayerDataUrl),
-    warning: stringOrEmpty(input.warning) || undefined
+      : []
   };
 }
 
@@ -91,105 +71,71 @@ function normalizeBlock(
     return null;
   }
 
+  const bbox = normalizeBlockBbox(input.bbox, input.bboxSpace, pageSize);
+  if (!bbox) {
+    warnings.push(`Dropped block ${stringOrEmpty(input.id) || index + 1} because bbox was invalid.`);
+    return null;
+  }
+
+  const renderBbox = normalizeBlockBbox(input.renderBbox, input.renderBboxSpace ?? input.bboxSpace, pageSize);
   const type = normalizeBlockType(input.type);
-  const sourceDirection = normalizeSourceDirection(input.sourceDirection, "vertical");
   const renderDirection = enforceRenderDirection(type, normalizeRenderDirection(input.renderDirection, "horizontal"));
-  const rawBbox = {
-    x: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.x : 0, 0),
-    y: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.y : 0, 0),
-    w: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.w : 100, 100),
-    h: finiteNumber(input.bbox && isRecord(input.bbox) ? input.bbox.h : 100, 100)
-  };
-  const rawRenderBbox = isRecord(input.renderBbox)
-    ? {
-        x: finiteNumber(input.renderBbox.x, rawBbox.x),
-        y: finiteNumber(input.renderBbox.y, rawBbox.y),
-        w: finiteNumber(input.renderBbox.w, rawBbox.w),
-        h: finiteNumber(input.renderBbox.h, rawBbox.h)
-      }
-    : null;
-  const bboxSpace = readBboxSpace(input.bboxSpace);
-  const renderBboxSpace = readBboxSpace(input.renderBboxSpace) ?? bboxSpace;
+
   return {
     id: stringOrEmpty(input.id) || `block-${index + 1}`,
     type,
-    bbox: normalizeBlockBbox(rawBbox, pageSize, bboxSpace),
-    renderBbox: rawRenderBbox ? normalizeBlockBbox(rawRenderBbox, pageSize, renderBboxSpace) : undefined,
+    bbox,
+    renderBbox: renderBbox ?? undefined,
     bboxSpace: "normalized_1000",
-    renderBboxSpace: rawRenderBbox ? "normalized_1000" : undefined,
+    renderBboxSpace: renderBbox ? "normalized_1000" : undefined,
     sourceText: stringOrEmpty(input.sourceText),
     translatedText: stringOrEmpty(input.translatedText),
-    confidence: clamp(finiteNumber(input.confidence, 0.6), 0, 1),
-    sourceDirection,
+    confidence: clamp(finiteNumber(input.confidence, 0.8), 0, 1),
+    sourceDirection: normalizeSourceDirection(input.sourceDirection, "vertical"),
     renderDirection,
     fontSizePx: clamp(finiteNumber(input.fontSizePx, 24), 10, 72),
-    lineHeight: clamp(finiteNumber(input.lineHeight, 1.2), 1, 1.8),
+    lineHeight: clamp(finiteNumber(input.lineHeight, 1.18), 1, 1.8),
     textAlign: normalizeTextAlign(input.textAlign),
-    textColor: normalizeColor(input.textColor, "#111111"),
-    backgroundColor: normalizeColor(input.backgroundColor, "#fffdf5"),
-    opacity: clamp(finiteNumber(input.opacity, 0.78), 0.1, 1),
-    autoFitText: typeof input.autoFitText === "boolean" ? input.autoFitText : true,
-    readingText: stringOrEmpty(input.readingText) || undefined,
-    ocrRawText: stringOrEmpty(input.ocrRawText) || undefined,
-    ocrConfidence: input.ocrConfidence === undefined ? undefined : clamp(finiteNumber(input.ocrConfidence, 0.6), 0, 1)
+    textColor: normalizeColor(input.textColor, DEFAULT_TEXT_COLOR),
+    backgroundColor: normalizeColor(input.backgroundColor, DEFAULT_BACKGROUND_COLOR),
+    opacity: clamp(finiteNumber(input.opacity, 0.88), 0.1, 1),
+    autoFitText: typeof input.autoFitText === "boolean" ? input.autoFitText : true
   };
 }
 
 function normalizeBlockBbox(
-  rawBbox: { x: number; y: number; w: number; h: number },
-  pageSize: { width: number; height: number },
-  declaredSpace?: "normalized_1000" | "pixels"
+  input: unknown,
+  declaredSpace: unknown,
+  pageSize: { width: number; height: number }
 ) {
-  if (declaredSpace === "normalized_1000") {
-    return clampBbox(rawBbox);
+  if (!isRecord(input)) {
+    return null;
   }
+
+  const raw = {
+    x: finiteNumber(input.x, 0),
+    y: finiteNumber(input.y, 0),
+    w: finiteNumber(input.w, 100),
+    h: finiteNumber(input.h, 100)
+  };
 
   if (declaredSpace === "pixels") {
-    return clampBbox({
-      x: (rawBbox.x / Math.max(1, pageSize.width)) * 1000,
-      y: (rawBbox.y / Math.max(1, pageSize.height)) * 1000,
-      w: (rawBbox.w / Math.max(1, pageSize.width)) * 1000,
-      h: (rawBbox.h / Math.max(1, pageSize.height)) * 1000
-    });
+    return pixelsToBbox(raw, pageSize.width, pageSize.height);
   }
 
-  const looksLikePixel =
-    rawBbox.x > 1000 ||
-    rawBbox.y > 1000 ||
-    rawBbox.w > 1000 ||
-    rawBbox.h > 1000 ||
-    rawBbox.x + rawBbox.w > 1000 ||
-    rawBbox.y + rawBbox.h > 1000;
-
-  if (!looksLikePixel) {
-    return clampBbox(rawBbox);
+  if (declaredSpace === "normalized_1000") {
+    return clampBbox(raw);
   }
 
-  return clampBbox({
-    x: (rawBbox.x / Math.max(1, pageSize.width)) * 1000,
-    y: (rawBbox.y / Math.max(1, pageSize.height)) * 1000,
-    w: (rawBbox.w / Math.max(1, pageSize.width)) * 1000,
-    h: (rawBbox.h / Math.max(1, pageSize.height)) * 1000
-  });
-}
+  const looksLikePixels =
+    raw.x > 1000 ||
+    raw.y > 1000 ||
+    raw.w > 1000 ||
+    raw.h > 1000 ||
+    raw.x + raw.w > 1000 ||
+    raw.y + raw.h > 1000;
 
-function readBboxSpace(value: unknown): "normalized_1000" | "pixels" | undefined {
-  return value === "normalized_1000" || value === "pixels" ? value : undefined;
-}
-
-function normalizeInpaintSettings(input: unknown, warnings: string[]): InpaintSettings {
-  if (!isRecord(input)) {
-    warnings.push("Project was missing valid inpaint settings. Defaults were applied.");
-    return { ...DEFAULT_INPAINT };
-  }
-
-  return {
-    enabled: Boolean(input.enabled),
-    model: "qwen-image-edit-2511",
-    target: input.target === "selected" ? "selected" : "all",
-    featherPx: Math.round(clamp(finiteNumber(input.featherPx, DEFAULT_INPAINT.featherPx), 0, 512)),
-    cropPaddingPx: Math.round(clamp(finiteNumber(input.cropPaddingPx, DEFAULT_INPAINT.cropPaddingPx), 0, 1024))
-  };
+  return looksLikePixels ? pixelsToBbox(raw, pageSize.width, pageSize.height) : clampBbox(raw);
 }
 
 function finiteNumber(value: unknown, fallback: number): number {

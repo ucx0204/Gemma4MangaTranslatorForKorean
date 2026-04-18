@@ -1,0 +1,63 @@
+{
+  "label": "page-2-attempt-1",
+  "imagePath": "C:\\Users\\sam40\\Downloads\\ネタキャラ転生とかあんまりだ！ - 34.2話\\ネタキャラ転生とかあんまりだ！ - 34.2話\\manga (2).png",
+  "textPromptFile": null,
+  "createdAt": "2026-04-18T05:49:29.645Z",
+  "settings": {
+    "port": 18180,
+    "temperature": 0,
+    "topP": 0.85,
+    "topK": 40,
+    "maxTokens": 1400,
+    "ctx": 16384,
+    "batch": 32,
+    "ubatch": 32,
+    "gpuLayers": 16,
+    "fitTargetMb": 4096,
+    "imageMinTokens": 1120,
+    "imageMaxTokens": 1120,
+    "promptMode": "ko_bbox_lines_multiview",
+    "imageFirst": true,
+    "includeEnhancedVariant": true,
+    "enhancedMaxLongSide": 1900,
+    "enhancedContrast": 1.35
+  },
+  "prompt": "You are given the same Japanese manga page in multiple full-page renderings.\nImage 1 is the original full page. Another image is a grayscale/high-contrast assist view of the exact same page.\nTask: detect each speech bubble, narration box, name call, or sound-effect block that contains visible Japanese text and return a Korean replacement text with one bounding box per item.\nUse coordinates for the ORIGINAL page only.\nReturn only plain text records in this exact field format:\nid: 1\ntype: dialogue\nx: 120\ny: 80\nw: 160\nh: 240\njp: 馬鹿者… 無理をするな\nko: 바보 같은 녀석… 무리하지 마라.\n\nid: 2\ntype: dialogue\nx: 300\ny: 120\nw: 140\nh: 220\njp: ...\nko: ...\nRules:\n- Use only these keys: id, type, x, y, w, h, jp, ko.\n- Put exactly one field on each line.\n- Put one blank line between items.\n- Do not output JSON, braces, bullets, markdown fences, or commentary.\n- x, y, w, h must be integers in a 0..1000 coordinate space relative to the original page size.\n- Make each box large enough to cover the original Japanese text region and to fit the Korean replacement.\n- Merge multiple vertical lines that belong to the same speech bubble into one item.\n- Keep Korean concise, natural, and short enough to fit as an on-image overlay.\n- Include short interjections, names, and visible sound effects when meaningful.\n- Use type values such as dialogue, narration, name, or sfx.\n- Prefer 4 to 12 items for one manga page unless the page clearly has more.\n- Keep jp and ko on a single line each. Replace internal newlines with spaces.\n- If OCR is uncertain, keep only the uncertain fragment as [?] and still give the best short Korean translation.",
+  "outputText": "id: 1\ntype: dialogue\nx: 705\ny: 50\nw: 145\nh: 140\njp: ... たし 確かに そうです\nko: ... 확실히 그렇습니다.\n\nid: 2\ntype: dialogue\nx: 510\ny: 35\nw: 135\nh: 140\njp: うんうん すなお 素直でよろしい\nko: 그래그래, 솔직해서 좋구나.\n\nid: 3\ntype: dialogue\nx: 320\ny: 30\nw: 140\nh: 170\njp: 魔力の質が戻った...？ 状況が読めないが 好機は今しかない！\nko: 마력의 질이 돌아왔어...? 상황을 읽을 수 없지만, 기회는 지금뿐이야!\n\nid: 4\ntype: sfx\nx: 795\ny: 210\nw: 65\nh: 100\njp: スゥ...\nko: 스윽...\n\nid: 5\ntype: dialogue\nx: 705\ny: 365\nw: 160\nh: 180\njp: 落としどころについては僕に考えがあるからあとは任せてよっ\nko: 타협점은 내가 생각할 테니까 나머지는 맡겨줘!\n\nid: 6\ntype: dialogue\nx: 50\ny: 425\nw: 100\nh: 80\njp: ...ッ\nko: ...윽\n\nid: 7\ntype: dialogue\nx: 630\ny: 560\nw: 240\nh: 290\njp: 前っ...!!\nko: 앞으로...!!\n\nid: 8\ntype: sfx\nx: 20\ny: 660\nw: 270\nh: 320\njp: ゴォォォ\nko: 고오오오",
+  "rawResponse": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "id: 1\ntype: dialogue\nx: 705\ny: 50\nw: 145\nh: 140\njp: ... たし 確かに そうです\nko: ... 확실히 그렇습니다.\n\nid: 2\ntype: dialogue\nx: 510\ny: 35\nw: 135\nh: 140\njp: うんうん すなお 素直でよろしい\nko: 그래그래, 솔직해서 좋구나.\n\nid: 3\ntype: dialogue\nx: 320\ny: 30\nw: 140\nh: 170\njp: 魔力の質が戻った...？ 状況が読めないが 好機は今しかない！\nko: 마력의 질이 돌아왔어...? 상황을 읽을 수 없지만, 기회는 지금뿐이야!\n\nid: 4\ntype: sfx\nx: 795\ny: 210\nw: 65\nh: 100\njp: スゥ...\nko: 스윽...\n\nid: 5\ntype: dialogue\nx: 705\ny: 365\nw: 160\nh: 180\njp: 落としどころについては僕に考えがあるからあとは任せてよっ\nko: 타협점은 내가 생각할 테니까 나머지는 맡겨줘!\n\nid: 6\ntype: dialogue\nx: 50\ny: 425\nw: 100\nh: 80\njp: ...ッ\nko: ...윽\n\nid: 7\ntype: dialogue\nx: 630\ny: 560\nw: 240\nh: 290\njp: 前っ...!!\nko: 앞으로...!!\n\nid: 8\ntype: sfx\nx: 20\ny: 660\nw: 270\nh: 320\njp: ゴォォォ\nko: 고오오오"
+        }
+      }
+    ],
+    "created": 1776491369,
+    "model": "unsloth/gemma-4-26B-A4B-it-GGUF",
+    "system_fingerprint": "b8808-408225bb1",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 470,
+      "prompt_tokens": 2878,
+      "total_tokens": 3348,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "id": "chatcmpl-8OONnyIlYbHRatQUyeJ6POgnLqExijpH",
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 2878,
+      "prompt_ms": 46403.917,
+      "prompt_per_token_ms": 16.123668172341905,
+      "prompt_per_second": 62.020626405309706,
+      "predicted_n": 470,
+      "predicted_ms": 28656.491,
+      "predicted_per_token_ms": 60.971257446808515,
+      "predicted_per_second": 16.401170680667075
+    }
+  }
+}

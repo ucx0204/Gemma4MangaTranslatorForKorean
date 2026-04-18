@@ -1,13 +1,11 @@
 {
   "name": "manga-gemma-translator",
   "version": "0.1.0",
-  "description": "Desktop manga translation overlay editor powered by Gemma 4 multimodal GGUF.",
+  "description": "Thin desktop manga translation overlay editor powered by whole-page Gemma 4 OCR and bbox overlays.",
   "type": "commonjs",
   "main": "out/main/index.js",
   "scripts": {
-    "bootstrap:glmocr": "node scripts/ensure-glmocr-runtime.cjs",
     "dev": "node scripts/dev.cjs",
-    "dev:full": "node scripts/dev.cjs --bootstrap-glmocr",
     "build": "node scripts/build.cjs",
     "compile:electron": "tsc -p tsconfig.electron.json",
     "logs": "node scripts/tail-log.cjs",

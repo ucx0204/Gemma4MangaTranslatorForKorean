@@ -1,15 +1,4 @@
-import type {
-  BBox,
-  BlockType,
-  RawGemmaAnalysis,
-  RawGemmaBlock,
-  RenderTextDirection,
-  SourceTextDirection,
-  TranslationBlock
-} from "./types";
-
-const DEFAULT_TEXT_COLOR = "#111111";
-const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
+import type { BBox, BlockType, RenderTextDirection, SourceTextDirection, TranslationBlock } from "./types";
 
 export function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
@@ -44,20 +33,13 @@ export function pixelsToBbox(bbox: BBox, width: number, height: number): BBox {
   });
 }
 
-export function resolveBlockRenderBbox(block: Pick<TranslationBlock, "bbox" | "renderBbox" | "type">): BBox {
-  if (block.renderBbox) {
-    return clampBbox(block.renderBbox);
-  }
-  return clampBbox(block.bbox);
-}
-
-export function defaultLineHeightForRenderDirection(direction: RenderTextDirection): number {
-  return 1.18;
+export function resolveBlockRenderBbox(block: Pick<TranslationBlock, "bbox" | "renderBbox">): BBox {
+  return clampBbox(block.renderBbox ?? block.bbox);
 }
 
 export function estimateBlockFontSizePx(
   text: string,
-  block: Pick<TranslationBlock, "bbox" | "renderBbox" | "type">,
+  block: Pick<TranslationBlock, "bbox" | "renderBbox">,
   pageSize: { width: number; height: number }
 ): number {
   return estimateFontSizePx(text, resolveBlockRenderBbox(block), pageSize);
@@ -65,30 +47,15 @@ export function estimateBlockFontSizePx(
 
 export function resolveEditableBlockBbox(block: Pick<TranslationBlock, "bbox" | "renderBbox">): { key: "bbox" | "renderBbox"; bbox: BBox } {
   if (block.renderBbox) {
-    return {
-      key: "renderBbox",
-      bbox: clampBbox(block.renderBbox)
-    };
+    return { key: "renderBbox", bbox: clampBbox(block.renderBbox) };
   }
-
-  return {
-    key: "bbox",
-    bbox: clampBbox(block.bbox)
-  };
+  return { key: "bbox", bbox: clampBbox(block.bbox) };
 }
 
 export function applyEditableBlockBbox(block: TranslationBlock, nextBbox: BBox): TranslationBlock {
   const target = resolveEditableBlockBbox(block);
   const clamped = clampBbox(nextBbox);
-  return target.key === "renderBbox"
-    ? {
-        ...block,
-        renderBbox: clamped
-      }
-    : {
-        ...block,
-        bbox: clamped
-      };
+  return target.key === "renderBbox" ? { ...block, renderBbox: clamped } : { ...block, bbox: clamped };
 }
 
 export function offsetBlockBboxes(block: TranslationBlock, dx: number, dy: number): TranslationBlock {
@@ -99,21 +66,8 @@ export function offsetBlockBboxes(block: TranslationBlock, dx: number, dy: numbe
   };
 }
 
-export function shouldRunInpaint(settings: { enabled: boolean }): boolean {
-  return settings.enabled;
-}
-
-export function shouldConfirmRestart(hasActiveJob: boolean, hasWork: boolean): boolean {
-  return !hasActiveJob && hasWork;
-}
-
-export function normalizeGemmaAnalysis(raw: RawGemmaAnalysis, pageSize: { width: number; height: number }): TranslationBlock[] {
-  const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
-  return blocks.map((block, index) => normalizeGemmaBlock(block, index, pageSize)).filter(Boolean) as TranslationBlock[];
-}
-
 export function enforceRenderDirection(_type: BlockType, direction: RenderTextDirection): RenderTextDirection {
-  return direction;
+  return direction === "rotated" || direction === "hidden" ? direction : "horizontal";
 }
 
 export function normalizeBlockType(value: unknown): BlockType {
@@ -124,40 +78,25 @@ export function normalizeBlockType(value: unknown): BlockType {
   if (["sfx", "sound", "effect", "onomatopoeia"].includes(text)) {
     return "sfx";
   }
-  if (["sign", "label", "background"].includes(text)) {
-    return "sign";
-  }
-  if (["caption", "narration"].includes(text)) {
+  if (["caption", "narration", "name"].includes(text)) {
     return "caption";
-  }
-  if (["handwriting", "handwritten"].includes(text)) {
-    return "handwriting";
   }
   return "other";
 }
 
 export function normalizeSourceDirection(value: unknown, fallback: SourceTextDirection): SourceTextDirection {
   const text = String(value ?? "").trim().toLowerCase();
-  if (text === "horizontal" || text === "vertical") {
-    return text as SourceTextDirection;
-  }
-  return fallback;
+  return text === "horizontal" || text === "vertical" ? text : fallback;
 }
 
 export function normalizeRenderDirection(value: unknown, fallback: RenderTextDirection): RenderTextDirection {
   const text = String(value ?? "").trim().toLowerCase();
-  if (text === "horizontal" || text === "rotated" || text === "hidden") {
-    return text as RenderTextDirection;
-  }
-  return fallback;
+  return text === "horizontal" || text === "rotated" || text === "hidden" ? text : fallback;
 }
 
 export function normalizeTextAlign(value: unknown): "left" | "center" | "right" {
   const text = String(value ?? "").trim().toLowerCase();
-  if (text === "left" || text === "right") {
-    return text;
-  }
-  return "center";
+  return text === "left" || text === "right" ? text : "center";
 }
 
 export function normalizeColor(value: unknown, fallback: string): string {
@@ -168,81 +107,11 @@ export function normalizeColor(value: unknown, fallback: string): string {
 export function estimateFontSizePx(text: string, bbox: BBox, pageSize: { width: number; height: number }): number {
   const px = bboxToPixels(bbox, pageSize.width, pageSize.height);
   const compactLength = Math.max(1, text.replace(/\s+/g, "").length);
-  const lineCount = Math.max(1, Math.ceil(compactLength / Math.max(4, Math.floor(px.w / 18))));
-  const heightLimited = Math.floor(px.h / (lineCount * 1.18));
+  const approxCharsPerLine = Math.max(4, Math.floor(px.w / 20));
+  const lineCount = Math.max(1, Math.ceil(compactLength / approxCharsPerLine));
+  const heightLimited = Math.floor(px.h / (lineCount * 1.2));
   const widthLimited = Math.floor(px.w / Math.min(12, Math.max(4, compactLength)));
-  return clamp(Math.min(heightLimited, widthLimited, 32), 12, 48);
-}
-
-function normalizeGemmaBlock(raw: RawGemmaBlock, index: number, pageSize: { width: number; height: number }): TranslationBlock | null {
-  const bbox = readBbox(raw.bbox);
-  if (!bbox) {
-    return null;
-  }
-  const renderBbox = readBbox(raw.renderBbox ?? raw.render_bbox);
-
-  const type = normalizeBlockType(raw.type);
-  const sourceText = String(raw.sourceText ?? raw.source_text ?? "").trim();
-  const translatedText = String(raw.translatedText ?? raw.translated_text ?? raw.translation ?? "").trim();
-  const sourceDirection = normalizeSourceDirection(raw.sourceDirection ?? raw.source_direction, "vertical");
-  const rawRenderDirection = normalizeRenderDirection(raw.renderDirection ?? raw.render_direction, "horizontal");
-  const renderDirection = enforceRenderDirection(type, rawRenderDirection);
-  const normalizedBbox = clampBbox(bbox);
-  const normalizedRenderBbox = renderBbox ? clampBbox(renderBbox) : undefined;
-  const fontSize = Number(raw.fontSizePx ?? raw.font_size_px);
-  const lineHeight = Number(raw.lineHeight ?? raw.line_height);
-  const opacity = Number(raw.opacity);
-  const textAlign = normalizeTextAlign(raw.textAlign ?? raw.text_align);
-
-  return {
-      id: String(raw.id ?? `block-${Date.now()}-${index}`),
-      type,
-      bbox: normalizedBbox,
-      renderBbox: normalizedRenderBbox,
-      sourceText,
-      translatedText,
-      confidence: clamp(Number(raw.confidence ?? 0.6), 0, 1),
-      sourceDirection,
-      renderDirection,
-      fontSizePx: clamp(
-        fontSize ||
-          estimateBlockFontSizePx(
-            translatedText || sourceText,
-            { bbox: normalizedBbox, renderBbox: normalizedRenderBbox, type },
-            pageSize
-          ),
-        10,
-        72
-      ),
-      lineHeight: clamp(lineHeight || defaultLineHeightForRenderDirection(renderDirection), 1, 1.8),
-      textAlign,
-      textColor: normalizeColor(raw.textColor ?? raw.text_color, DEFAULT_TEXT_COLOR),
-      backgroundColor: normalizeColor(raw.backgroundColor ?? raw.background_color, DEFAULT_BACKGROUND_COLOR),
-      opacity: clamp(Number.isFinite(opacity) ? opacity : 0.78, 0.1, 1)
-  };
-}
-
-function readBbox(input: RawGemmaBlock["bbox"]): BBox | null {
-  if (Array.isArray(input) && input.length >= 4) {
-    return {
-      x: Number(input[0]),
-      y: Number(input[1]),
-      w: Number(input[2]),
-      h: Number(input[3])
-    };
-  }
-
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    const box = input as Partial<BBox>;
-    return {
-      x: Number(box.x),
-      y: Number(box.y),
-      w: Number(box.w),
-      h: Number(box.h)
-    };
-  }
-
-  return null;
+  return clamp(Math.min(heightLimited, widthLimited, 40), 12, 72);
 }
 
 function offsetBbox(bbox: BBox, dx: number, dy: number): BBox {

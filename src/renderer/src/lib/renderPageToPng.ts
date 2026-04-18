@@ -45,10 +45,6 @@ export async function renderPageToPng(page: MangaPage, imageElement: HTMLImageEl
   }
 
   context.drawImage(imageElement, 0, 0, width, height);
-  if (page.cleanLayerDataUrl) {
-    const cleanLayer = await loadImage(page.cleanLayerDataUrl);
-    context.drawImage(cleanLayer, 0, 0, width, height);
-  }
 
   for (const block of page.blocks) {
     if (block.renderDirection === "hidden") {
@@ -175,15 +171,6 @@ function drawWrappedText(
   for (const [index, line] of lines.entries()) {
     context.fillText(line, x, y + index * lineHeight, maxWidth);
   }
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Failed to load image"));
-    image.src = src;
-  });
 }
 
 function resolveTextFontSizePx(
