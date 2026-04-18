@@ -9,6 +9,7 @@ tmp-tiles/
 tmp-*.png
 tmp/
 models/
+testProject1/
 logs/*
 !logs/runtime/
 logs/runtime/*
