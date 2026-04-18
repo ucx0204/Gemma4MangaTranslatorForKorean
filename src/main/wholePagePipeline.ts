@@ -86,11 +86,16 @@ export async function runWholePagePipeline({
   throwIfAborted(signal);
 
   const baseOptions = buildBaseOptions(jobId);
+  const progressTotal = pages.length + 3;
   emit({
     id: jobId,
     kind: "gemma-analysis",
     status: "starting",
     progressText: "Gemma 4 서버 시작 중",
+    phase: "booting",
+    progressCurrent: 0,
+    progressTotal,
+    pageTotal: pages.length,
     detail: `gpu layers ${baseOptions.gpuLayers}, image tokens ${baseOptions.imageMinTokens}`
   });
 
@@ -98,6 +103,18 @@ export async function runWholePagePipeline({
   onCleanupReady?.(() => simplePage.stopServer(server));
   const warnings: string[] = [];
   const maxAttempts = Math.max(1, readNumberEnv("MANGA_TRANSLATOR_PAGE_RETRIES", 5));
+
+  emit({
+    id: jobId,
+    kind: "gemma-analysis",
+    status: "running",
+    progressText: "모델 준비 완료",
+    phase: "ready",
+    progressCurrent: 1,
+    progressTotal,
+    pageTotal: pages.length,
+    detail: `server ready on port ${baseOptions.port}`
+  });
 
   try {
     const nextPages: MangaPage[] = [];
@@ -117,6 +134,13 @@ export async function runWholePagePipeline({
           kind: "gemma-analysis",
           status: "running",
           progressText: `${page.name} 분석 중`,
+          phase: "page_running",
+          progressCurrent: 1 + index,
+          progressTotal,
+          pageIndex: index + 1,
+          pageTotal: pages.length,
+          attempt,
+          attemptTotal: maxAttempts,
           detail: `${index + 1}/${pages.length}, 시도 ${attempt}/${maxAttempts}`
         });
 
@@ -153,6 +177,11 @@ export async function runWholePagePipeline({
             kind: "gemma-analysis",
             status: "running",
             progressText: `${page.name} 완료`,
+            phase: "page_done",
+            progressCurrent: 2 + index,
+            progressTotal,
+            pageIndex: index + 1,
+            pageTotal: pages.length,
             detail: `${items.length}개 블록`
           });
           break;
@@ -170,6 +199,13 @@ export async function runWholePagePipeline({
               kind: "gemma-analysis",
               status: "running",
               progressText: `${page.name} 재시도`,
+              phase: "page_retry",
+              progressCurrent: 1 + index,
+              progressTotal,
+              pageIndex: index + 1,
+              pageTotal: pages.length,
+              attempt: attempt + 1,
+              attemptTotal: maxAttempts,
               detail: `${attempt}/${maxAttempts} 실패, 다시 시도합니다`
             });
             continue;
@@ -192,9 +228,26 @@ export async function runWholePagePipeline({
         kind: "gemma-analysis",
         status: "running",
         progressText: `${page.name} 건너뜀`,
+        phase: "page_skipped",
+        progressCurrent: 2 + index,
+        progressTotal,
+        pageIndex: index + 1,
+        pageTotal: pages.length,
         detail: `${maxAttempts}회 재시도 후 실패`
       });
     }
+
+    emit({
+      id: jobId,
+      kind: "gemma-analysis",
+      status: "running",
+      progressText: "결과 정리 중",
+      phase: "finalizing",
+      progressCurrent: progressTotal - 1,
+      progressTotal,
+      pageTotal: pages.length,
+      detail: `${nextPages.length} pages ready`
+    });
 
     return { pages: nextPages, warnings };
   } finally {

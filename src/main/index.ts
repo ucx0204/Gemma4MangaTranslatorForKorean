@@ -26,6 +26,7 @@ let activeJob: {
   id: string;
   abortController: AbortController;
   cleanup?: () => Promise<void>;
+  lastEvent?: JobEvent;
 } | null = null;
 
 function createWindow(): void {
@@ -197,9 +198,19 @@ function registerIpc(): void {
     activeJob = { id, abortController };
 
     const emit = (event: JobEvent) => {
+      if (activeJob?.id === id) {
+        activeJob.lastEvent = event;
+      }
       writeLog(event.status === "failed" ? "error" : event.status === "cancelled" ? "warn" : "info", `job:${event.kind}:${event.status}`, {
         id: event.id,
         progressText: event.progressText,
+        phase: event.phase,
+        progressCurrent: event.progressCurrent,
+        progressTotal: event.progressTotal,
+        pageIndex: event.pageIndex,
+        pageTotal: event.pageTotal,
+        attempt: event.attempt,
+        attemptTotal: event.attemptTotal,
         detail: event.detail
       });
       mainWindow?.webContents.send("job:event", event);
@@ -221,17 +232,52 @@ function registerIpc(): void {
       if (abortController.signal.aborted) {
         throw new DOMException("Aborted", "AbortError");
       }
-      emit({ id, kind: "gemma-analysis", status: "completed", progressText: "번역 작업 완료" });
+      emit({
+        id,
+        kind: "gemma-analysis",
+        status: "completed",
+        progressText: "번역 작업 완료",
+        phase: "done",
+        progressCurrent: request.pages.length + 3,
+        progressTotal: request.pages.length + 3,
+        pageTotal: request.pages.length
+      });
       return { status: "completed", pages: result.pages, warnings: result.warnings };
     } catch (error) {
+      const lastEvent = activeJob?.id === id ? activeJob.lastEvent : undefined;
       if (isAbortError(error) || abortController.signal.aborted) {
-        emit({ id, kind: "gemma-analysis", status: "cancelled", progressText: "작업이 취소되었습니다." });
+        emit({
+          id,
+          kind: "gemma-analysis",
+          status: "cancelled",
+          progressText: "작업이 취소되었습니다.",
+          phase: "cancelled",
+          progressCurrent: lastEvent?.progressCurrent,
+          progressTotal: lastEvent?.progressTotal,
+          pageIndex: lastEvent?.pageIndex,
+          pageTotal: lastEvent?.pageTotal,
+          attempt: lastEvent?.attempt,
+          attemptTotal: lastEvent?.attemptTotal
+        });
         return { status: "cancelled" };
       }
 
       const message = error instanceof Error ? error.message : String(error);
       logError("Analysis job failed", error);
-      emit({ id, kind: "gemma-analysis", status: "failed", progressText: "작업 실패", detail: message });
+      emit({
+        id,
+        kind: "gemma-analysis",
+        status: "failed",
+        progressText: "작업 실패",
+        phase: "failed",
+        progressCurrent: lastEvent?.progressCurrent,
+        progressTotal: lastEvent?.progressTotal,
+        pageIndex: lastEvent?.pageIndex,
+        pageTotal: lastEvent?.pageTotal,
+        attempt: lastEvent?.attempt,
+        attemptTotal: lastEvent?.attemptTotal,
+        detail: message
+      });
       return { status: "failed", error: message };
     } finally {
       activeJob = null;
@@ -248,7 +294,13 @@ function registerIpc(): void {
       id: job.id,
       kind: "gemma-analysis",
       status: "cancelling",
-      progressText: "작업 취소 중"
+      progressText: "작업 취소 중",
+      progressCurrent: job.lastEvent?.progressCurrent,
+      progressTotal: job.lastEvent?.progressTotal,
+      pageIndex: job.lastEvent?.pageIndex,
+      pageTotal: job.lastEvent?.pageTotal,
+      attempt: job.lastEvent?.attempt,
+      attemptTotal: job.lastEvent?.attemptTotal
     } satisfies JobEvent);
     job.abortController.abort();
     await job.cleanup?.();

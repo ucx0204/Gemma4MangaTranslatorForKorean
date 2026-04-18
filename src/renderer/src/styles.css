@@ -64,18 +64,16 @@ button:hover:not(:disabled) {
 }
 
 .sidebar {
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+  min-height: 0;
   border-right: 1px solid #2e3137;
   background: #17191e;
   padding: 18px;
 }
 
-.brand h1 {
-  margin: 0;
-  font-size: 22px;
-}
-
-.brand p,
 .muted p,
 .status-panel p,
 .page-item small {
@@ -86,11 +84,6 @@ button:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
-.status-panel .log-path {
-  color: #91c8ff;
-  font-size: 12px;
-}
-
 .toolbar,
 .run-panel,
 .page-list,
@@ -98,7 +91,6 @@ button:hover:not(:disabled) {
 .status-panel {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
 }
 
 .toolbar {
@@ -106,20 +98,71 @@ button:hover:not(:disabled) {
 }
 
 .run-panel,
-.editor-panel {
+.page-list,
+.editor-panel,
+.status-panel {
   padding: 12px;
   border: 1px solid #333841;
   border-radius: 8px;
   background: #1c1f25;
 }
 
+.panel-header,
 .page-list h2,
 .editor-panel h2,
 .status-panel h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin: 0;
   font-size: 13px;
   text-transform: uppercase;
   color: #d6cbbb;
+}
+
+.page-list,
+.status-panel {
+  min-height: 0;
+}
+
+.page-list {
+  flex: 1 1 240px;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.status-panel {
+  flex: 1 1 200px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.editor-panel {
+  flex: 0 0 auto;
+}
+
+.page-list-scroll,
+.status-log-scroll {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.status-log-scroll p {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #16191e;
+  border: 1px solid #2b3138;
+  font-size: 13px;
+}
+
+.panel-empty,
+.muted-line {
+  margin: 0;
+  color: #9f998f;
+  font-size: 13px;
 }
 
 .page-item {
@@ -164,7 +207,8 @@ button:hover:not(:disabled) {
 }
 
 .editor-panel textarea {
-  min-height: 74px;
+  min-height: 64px;
+  max-height: 140px;
   resize: vertical;
 }
 
@@ -179,17 +223,6 @@ button:hover:not(:disabled) {
   padding: 8px;
 }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.toggle-row input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-}
-
 .color-row,
 .block-actions {
   display: grid;
@@ -197,11 +230,50 @@ button:hover:not(:disabled) {
   gap: 10px;
 }
 
+.progress-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #15181d;
+  border: 1px solid #2d333b;
+}
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #ddd5ca;
+  font-size: 13px;
+}
+
+.progress-meta strong {
+  color: #f6efe4;
+  font-size: 12px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #0f1216;
+  border: 1px solid #2d333b;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4aa58f 0%, #78c7b2 100%);
+}
+
 .job-pill {
   border-radius: 999px;
   padding: 8px 10px;
   background: #272b33;
   color: #f5f0e8;
+  font-size: 13px;
 }
 
 .job-pill.running,
@@ -272,8 +344,7 @@ button:hover:not(:disabled) {
 }
 
 .overlay-text {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
   max-height: 100%;
   display: flex;
   align-items: center;

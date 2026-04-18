@@ -39,13 +39,18 @@ export function OverlayBlock({
     textAlign: block.textAlign
   };
   const textWrapStyle: React.CSSProperties = {
+    width: Math.min(layout.innerWidth, layout.fitInnerWidth),
+    maxWidth: "100%",
+    height: Math.min(layout.innerHeight, layout.fitInnerHeight),
+    maxHeight: "100%",
     overflow: layout.overflow ? "visible" : "hidden"
   };
   const contentStyle: React.CSSProperties = {
     writingMode: "horizontal-tb",
     transform: block.renderDirection === "rotated" ? "rotate(-8deg)" : undefined,
     transformOrigin: "center center",
-    width: "100%",
+    width: `${layout.fitInnerWidth}px`,
+    maxWidth: "100%",
     maxHeight: layout.overflow ? "none" : "100%"
   };
 

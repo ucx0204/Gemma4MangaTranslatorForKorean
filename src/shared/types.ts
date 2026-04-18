@@ -14,6 +14,18 @@ export type JobStatus =
   | "failed"
   | "completed";
 
+export type JobPhase =
+  | "booting"
+  | "ready"
+  | "page_running"
+  | "page_retry"
+  | "page_done"
+  | "page_skipped"
+  | "finalizing"
+  | "done"
+  | "cancelled"
+  | "failed";
+
 export type BBox = {
   x: number;
   y: number;
@@ -63,6 +75,13 @@ export type JobState = {
   kind: JobKind;
   status: JobStatus;
   progressText: string;
+  phase?: JobPhase;
+  progressCurrent?: number;
+  progressTotal?: number;
+  pageIndex?: number;
+  pageTotal?: number;
+  attempt?: number;
+  attemptTotal?: number;
 };
 
 export type JobEvent = JobState & {

@@ -5,6 +5,7 @@ import { EditorPanel } from "./components/EditorPanel";
 import { ImageStage } from "./components/ImageStage";
 import { PageList } from "./components/PageList";
 import { useStageSize } from "./hooks/useStageSize";
+import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
 import { renderPageToPng } from "./lib/renderPageToPng";
 import "./styles.css";
 
@@ -31,7 +32,6 @@ export default function App(): React.JSX.Element {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [jobState, setJobState] = useState<JobState>(EMPTY_JOB);
   const [statusLines, setStatusLines] = useState<string[]>([]);
-  const [logPath, setLogPath] = useState<string>("");
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -44,28 +44,42 @@ export default function App(): React.JSX.Element {
     [selectedPage?.height, selectedPage?.width]
   );
   const stageSize = useStageSize(imageRef, selectedPageSize);
+  const progressSnapshot = useMemo(() => resolveProgressSnapshot(jobState), [jobState]);
+  const showProgressBar = jobState.status !== "idle" && !!progressSnapshot;
+
+  const appendStatusLine = useCallback((line: string) => {
+    const next = line.trim();
+    if (!next) {
+      return;
+    }
+    setStatusLines((lines) => {
+      if (lines[0] === next) {
+        return lines;
+      }
+      return [next, ...lines].slice(0, 16);
+    });
+  }, []);
 
   React.useEffect(() => {
     const unsubscribe = window.mangaApi.onJobEvent((event) => {
-      setJobState({
+      const friendlyText = formatJobLabel(event);
+      setJobState((current) => ({
         id: event.id,
         kind: event.kind,
         status: event.status,
-        progressText: event.progressText
-      });
-      setStatusLines((lines) => [`${event.progressText}${event.detail ? ` - ${event.detail}` : ""}`, ...lines].slice(0, 8));
+        progressText: friendlyText,
+        phase: event.phase ?? current.phase,
+        progressCurrent: event.progressCurrent ?? current.progressCurrent,
+        progressTotal: event.progressTotal ?? current.progressTotal,
+        pageIndex: event.pageIndex ?? current.pageIndex,
+        pageTotal: event.pageTotal ?? current.pageTotal,
+        attempt: event.attempt ?? current.attempt,
+        attemptTotal: event.attemptTotal ?? current.attemptTotal
+      }));
+      appendStatusLine(formatJobEventLine(event));
     });
     return unsubscribe;
-  }, []);
-
-  React.useEffect(() => {
-    void window.mangaApi
-      .getLogPath()
-      .then((path) => setLogPath(path))
-      .catch((error) => {
-        void window.mangaApi.writeLog("error", "Failed to read log path", String(error));
-      });
-  }, []);
+  }, [appendStatusLine]);
 
   const currentProject: MangaProject = useMemo(
     () => ({
@@ -78,8 +92,8 @@ export default function App(): React.JSX.Element {
 
   const pushStatus = useCallback((line: string) => {
     void window.mangaApi.writeLog("info", "UI status", { line });
-    setStatusLines((lines) => [line, ...lines].slice(0, 8));
-  }, []);
+    appendStatusLine(line);
+  }, [appendStatusLine]);
 
   const openImages = async () => {
     const opened = (await window.mangaApi.openImages()) as MangaPage[];
@@ -119,7 +133,7 @@ export default function App(): React.JSX.Element {
     }
     const result = await window.mangaApi.saveProject(currentProject);
     if (result?.saved) {
-      pushStatus(`프로젝트 저장됨: ${result.filePath}`);
+      pushStatus("프로젝트를 저장했습니다.");
     }
   };
 
@@ -139,11 +153,16 @@ export default function App(): React.JSX.Element {
       return;
     }
 
+    setStatusLines([]);
     setJobState({
       id: "pending",
       kind: "gemma-analysis",
       status: "starting",
-      progressText: "번역 시작"
+      progressText: "모델 준비 중",
+      phase: "booting",
+      progressCurrent: 0,
+      progressTotal: pages.length + 3,
+      pageTotal: pages.length
     });
 
     const requestPages = pages.map(({ id, name, imagePath, dataUrl, width, height }) => ({
@@ -161,18 +180,20 @@ export default function App(): React.JSX.Element {
       setPages(nextPages);
       setSelectedPageId((current) => (nextPages.some((page) => page.id === current) ? current : nextPages[0]?.id ?? null));
       setSelectedBlockId(null);
-      for (const warning of result.warnings ?? []) {
-        pushStatus(warning);
+      const warningSummary = summarizeWarnings(result.warnings ?? []);
+      if (warningSummary) {
+        pushStatus(warningSummary);
       }
       return;
     }
 
     if (result.status === "cancelled") {
-      pushStatus("작업이 취소되었습니다.");
       return;
     }
 
-    pushStatus(result.error ? `작업 실패: ${result.error}` : "작업 실패");
+    if (result.status === "failed" && !result.error) {
+      pushStatus("작업 실패");
+    }
   };
 
   const cancelJob = async () => {
@@ -315,18 +336,13 @@ export default function App(): React.JSX.Element {
     const dataUrl = await renderPageToPng(selectedPage, imageRef.current);
     const result = await window.mangaApi.exportPng(dataUrl, selectedPage.name.replace(/\.[^.]+$/, "-translated.png"));
     if (result?.saved) {
-      pushStatus(`PNG 내보내기 완료: ${result.filePath}`);
+      pushStatus("PNG 내보내기를 완료했습니다.");
     }
   };
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <section className="brand">
-          <h1>Gemma Manga Translator</h1>
-          <p>전체 페이지를 그대로 보고 bbox와 한국어 오버레이를 바로 만듭니다.</p>
-        </section>
-
         <section className="toolbar">
           <button onClick={openImages} disabled={jobActive}>이미지 열기</button>
           <button onClick={openImageFolder} disabled={jobActive}>폴더 열기</button>
@@ -339,6 +355,17 @@ export default function App(): React.JSX.Element {
         <section className="run-panel">
           <button className="primary" onClick={() => void startAnalysis()} disabled={!pages.length || jobActive}>페이지 전체 번역</button>
           {jobActive ? <button className="danger" onClick={() => void cancelJob()}>취소</button> : null}
+          {showProgressBar && progressSnapshot ? (
+            <div className="progress-card">
+              <div className="progress-meta">
+                <span>{jobState.progressText}</span>
+                <strong>{progressSnapshot.current} / {progressSnapshot.total}</strong>
+              </div>
+              <div className="progress-track" aria-hidden="true">
+                <div className="progress-fill" style={{ width: `${Math.round(progressSnapshot.ratio * 100)}%` }} />
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <PageList
@@ -355,12 +382,17 @@ export default function App(): React.JSX.Element {
         <EditorPanel block={selectedBlock} disabled={jobActive} onUpdate={updateSelectedBlock} onDelete={deleteSelectedBlock} onDuplicate={duplicateSelectedBlock} />
 
         <section className="status-panel">
-          <h2>Status</h2>
+          <h2>상태</h2>
           <div className={`job-pill ${jobState.status}`}>{jobState.progressText}</div>
-          {logPath ? <p className="log-path">{logPath}</p> : null}
-          {statusLines.map((line, index) => (
-            <p key={`${line}-${index}`}>{line}</p>
-          ))}
+          <div className="status-log-scroll">
+            {statusLines.length ? (
+              statusLines.map((line, index) => (
+                <p key={`${line}-${index}`}>{line}</p>
+              ))
+            ) : (
+              <p className="muted-line">아직 표시할 상태가 없습니다.</p>
+            )}
+          </div>
         </section>
       </aside>
 
@@ -379,8 +411,8 @@ export default function App(): React.JSX.Element {
           />
         ) : (
           <div className="empty-state">
-            <h2>이미지를 열면 바로 시작됩니다.</h2>
-            <p>기존 detector 없이, Gemma가 전체 페이지를 보고 블록과 번역문을 직접 만듭니다.</p>
+            <h2>이미지를 열고 바로 번역하세요.</h2>
+            <p>전체 페이지 기준으로 블록과 한국어 오버레이를 한 번에 만듭니다.</p>
             <button onClick={openImages}>이미지 열기</button>
           </div>
         )}
