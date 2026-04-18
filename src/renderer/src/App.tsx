@@ -379,8 +379,6 @@ export default function App(): React.JSX.Element {
           onRemove={removePage}
         />
 
-        <EditorPanel block={selectedBlock} disabled={jobActive} onUpdate={updateSelectedBlock} onDelete={deleteSelectedBlock} onDuplicate={duplicateSelectedBlock} />
-
         <section className="status-panel">
           <h2>상태</h2>
           <div className={`job-pill ${jobState.status}`}>{jobState.progressText}</div>
@@ -417,6 +415,10 @@ export default function App(): React.JSX.Element {
           </div>
         )}
       </section>
+
+      <aside className="editor-dock">
+        <EditorPanel block={selectedBlock} disabled={jobActive} onUpdate={updateSelectedBlock} onDelete={deleteSelectedBlock} onDuplicate={duplicateSelectedBlock} />
+      </aside>
     </main>
   );
 }

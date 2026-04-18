@@ -58,7 +58,7 @@ button:hover:not(:disabled) {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr) 320px;
   height: 100vh;
   background: #101114;
 }
@@ -71,6 +71,14 @@ button:hover:not(:disabled) {
   min-height: 0;
   border-right: 1px solid #2e3137;
   background: #17191e;
+  padding: 18px;
+}
+
+.editor-dock {
+  overflow: auto;
+  min-height: 0;
+  border-left: 1px solid #2e3137;
+  background: #15181d;
   padding: 18px;
 }
 
@@ -131,12 +139,13 @@ button:hover:not(:disabled) {
 }
 
 .status-panel {
-  flex: 1 1 200px;
+  flex: 0 0 220px;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .editor-panel {
-  flex: 0 0 auto;
+  display: grid;
+  align-content: start;
 }
 
 .page-list-scroll,
