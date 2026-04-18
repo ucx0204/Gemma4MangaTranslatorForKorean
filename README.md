@@ -11,11 +11,11 @@ Gemma 4가 페이지 전체를 직접 보고:
 ## 현재 구조
 
 - `src/main/index.ts`
-  Electron IPC와 파일 열기/저장/PNG 내보내기
+  Electron IPC와 이미지/폴더/ZIP 불러오기
 - `src/main/wholePagePipeline.ts`
   전체 페이지 분석 파이프라인
 - `src/shared/types.ts`
-  최소 프로젝트/블록 타입
+  최소 페이지/블록 타입
 - `src/renderer/src/App.tsx`
   페이지 목록, 오버레이 편집, 실행 UI
 - `logs/runtime/simple-page-translate.cjs`
@@ -52,9 +52,10 @@ npm run build
 ## 기본 동작
 
 - 이미지를 열면 원본 페이지가 그대로 들어옵니다.
+- `폴더 열기`는 기존 페이지가 있을 때 `추가` 또는 `교체`를 고를 수 있습니다.
+- `압축파일 열기`는 ZIP 안의 이미지 파일을 바로 페이지 목록으로 불러옵니다.
 - `페이지 전체 번역`을 누르면 앱이 `whole-page -> bbox -> Korean overlay` 방식으로 블록을 생성합니다.
 - 생성된 블록은 바로 드래그/리사이즈/수정할 수 있습니다.
-- `PNG 내보내기`로 현재 오버레이 상태를 이미지로 저장할 수 있습니다.
 - 중간 산출물은 `logs/app-jobs` 아래에 페이지별로 저장됩니다.
 
 ## 기본 모델 설정

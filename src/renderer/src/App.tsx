@@ -1,12 +1,11 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import type { BBox, JobState, MangaPage, MangaProject, TranslationBlock } from "../../shared/types";
+import type { BBox, JobState, MangaPage, PageImportResult, TranslationBlock } from "../../shared/types";
 import { applyEditableBlockBbox, clampBbox, enforceRenderDirection, offsetBlockBboxes, resolveEditableBlockBbox } from "../../shared/geometry";
 import { EditorPanel } from "./components/EditorPanel";
 import { ImageStage } from "./components/ImageStage";
 import { PageList } from "./components/PageList";
 import { useStageSize } from "./hooks/useStageSize";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
-import { renderPageToPng } from "./lib/renderPageToPng";
 import "./styles.css";
 
 const EMPTY_JOB: JobState = {
@@ -81,39 +80,49 @@ export default function App(): React.JSX.Element {
     return unsubscribe;
   }, [appendStatusLine]);
 
-  const currentProject: MangaProject = useMemo(
-    () => ({
-      version: 1,
-      pages,
-      selectedPageId
-    }),
-    [pages, selectedPageId]
-  );
-
   const pushStatus = useCallback((line: string) => {
     void window.mangaApi.writeLog("info", "UI status", { line });
     appendStatusLine(line);
   }, [appendStatusLine]);
 
+  const applyImportedPages = useCallback((result: PageImportResult, sourceLabel: string) => {
+    if (!result.pages.length) {
+      return;
+    }
+
+    if (result.mode === "replace") {
+      setPages(result.pages);
+      setSelectedPageId(result.pages[0]?.id ?? null);
+      setSelectedBlockId(null);
+      pushStatus(`${sourceLabel} 이미지 ${result.pages.length}개를 새로 불러왔습니다.`);
+      return;
+    }
+
+    setPages((current) => [...current, ...result.pages]);
+    setSelectedPageId(result.pages[0]?.id ?? null);
+    setSelectedBlockId(null);
+    pushStatus(`${sourceLabel} 이미지 ${result.pages.length}개를 추가했습니다.`);
+  }, [pushStatus]);
+
   const openImages = async () => {
-    const opened = (await window.mangaApi.openImages()) as MangaPage[];
+    const opened = await window.mangaApi.openImages();
     if (!opened.length) {
       return;
     }
     setPages((current) => [...current, ...opened]);
     setSelectedPageId(opened[0].id);
     setSelectedBlockId(null);
+    pushStatus(`이미지 ${opened.length}개를 불러왔습니다.`);
   };
 
   const openImageFolder = async () => {
-    const opened = (await window.mangaApi.openImageFolder()) as MangaPage[];
-    if (!opened.length) {
-      return;
-    }
-    setPages((current) => [...current, ...opened]);
-    setSelectedPageId(opened[0].id);
-    setSelectedBlockId(null);
-    pushStatus(`폴더에서 이미지 ${opened.length}개를 불러왔습니다.`);
+    const result = await window.mangaApi.openImageFolder(pages.length);
+    applyImportedPages(result, "폴더에서");
+  };
+
+  const openZipArchive = async () => {
+    const result = await window.mangaApi.openZipArchive(pages.length);
+    applyImportedPages(result, "ZIP에서");
   };
 
   const removePage = (pageId: string) => {
@@ -125,27 +134,6 @@ export default function App(): React.JSX.Element {
       }
       return next;
     });
-  };
-
-  const saveProject = async () => {
-    if (!pages.length) {
-      return;
-    }
-    const result = await window.mangaApi.saveProject(currentProject);
-    if (result?.saved) {
-      pushStatus("프로젝트를 저장했습니다.");
-    }
-  };
-
-  const loadProject = async () => {
-    const project = (await window.mangaApi.loadProject()) as MangaProject | null;
-    if (!project) {
-      return;
-    }
-    setPages(project.pages ?? []);
-    setSelectedPageId(project.selectedPageId ?? project.pages?.[0]?.id ?? null);
-    setSelectedBlockId(null);
-    pushStatus("프로젝트를 열었습니다.");
   };
 
   const startAnalysis = async () => {
@@ -329,26 +317,13 @@ export default function App(): React.JSX.Element {
     dragRef.current = null;
   };
 
-  const exportCurrentPage = async () => {
-    if (!selectedPage || !imageRef.current) {
-      return;
-    }
-    const dataUrl = await renderPageToPng(selectedPage, imageRef.current);
-    const result = await window.mangaApi.exportPng(dataUrl, selectedPage.name.replace(/\.[^.]+$/, "-translated.png"));
-    if (result?.saved) {
-      pushStatus("PNG 내보내기를 완료했습니다.");
-    }
-  };
-
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <section className="toolbar">
           <button onClick={openImages} disabled={jobActive}>이미지 열기</button>
           <button onClick={openImageFolder} disabled={jobActive}>폴더 열기</button>
-          <button onClick={loadProject} disabled={jobActive}>프로젝트 열기</button>
-          <button onClick={saveProject} disabled={!pages.length || jobActive}>저장</button>
-          <button onClick={exportCurrentPage} disabled={!selectedPage || jobActive}>PNG 내보내기</button>
+          <button onClick={openZipArchive} disabled={jobActive}>압축파일 열기</button>
           <button onClick={() => void window.mangaApi.openLogFolder()}>로그 폴더</button>
         </section>
 
@@ -411,7 +386,11 @@ export default function App(): React.JSX.Element {
           <div className="empty-state">
             <h2>이미지를 열고 바로 번역하세요.</h2>
             <p>전체 페이지 기준으로 블록과 한국어 오버레이를 한 번에 만듭니다.</p>
-            <button onClick={openImages}>이미지 열기</button>
+            <div className="empty-actions">
+              <button onClick={openImages}>이미지 열기</button>
+              <button onClick={openImageFolder}>폴더 열기</button>
+              <button onClick={openZipArchive}>압축파일 열기</button>
+            </div>
           </div>
         )}
       </section>

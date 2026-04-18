@@ -64,10 +64,11 @@ export type MangaPage = {
   blocks: TranslationBlock[];
 };
 
-export type MangaProject = {
-  version: 1;
+export type PageImportMode = "append" | "replace" | "cancelled";
+
+export type PageImportResult = {
+  mode: PageImportMode;
   pages: MangaPage[];
-  selectedPageId?: string | null;
 };
 
 export type JobState = {

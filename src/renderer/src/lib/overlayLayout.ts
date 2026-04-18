@@ -1,4 +1,4 @@
-import type { MangaPage, TranslationBlock } from "../../../shared/types";
+import type { TranslationBlock } from "../../../shared/types";
 import { bboxToPixels, clamp, resolveBlockRenderBbox } from "../../../shared/geometry";
 
 const MIN_FONT_SIZE_PX = 8;
@@ -33,29 +33,6 @@ export type BlockTextLayout = {
   fontSizePx: number;
   overflow: boolean;
 };
-
-export async function renderPageToPng(page: MangaPage, imageElement: HTMLImageElement): Promise<string> {
-  const width = imageElement.naturalWidth || page.width;
-  const height = imageElement.naturalHeight || page.height;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("Canvas is not available");
-  }
-
-  context.drawImage(imageElement, 0, 0, width, height);
-
-  for (const block of page.blocks) {
-    if (block.renderDirection === "hidden") {
-      continue;
-    }
-    drawBlock(context, block, width, height);
-  }
-
-  return canvas.toDataURL("image/png");
-}
 
 export function resolveOverlayFontSizePx(block: TranslationBlock, text: string, pageSize: ViewportSize, stageSize: ViewportSize): number {
   return resolveBlockTextLayout(block, text, pageSize, stageSize).fontSizePx;
@@ -113,65 +90,6 @@ export function hexToRgba(hex: string, alpha: number): string {
   const g = Number.parseInt(value.slice(2, 4), 16);
   const b = Number.parseInt(value.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
-}
-
-function drawBlock(context: CanvasRenderingContext2D, block: TranslationBlock, width: number, height: number): void {
-  const displayText = block.translatedText || block.sourceText || "...";
-  const layout = resolveBlockTextLayout(block, displayText, { width, height }, { width, height });
-  const { rect, paddingPx, fitInnerWidth, fitInnerHeight, fontSizePx } = layout;
-  context.save();
-  context.fillStyle = hexToRgba(block.backgroundColor, block.opacity);
-  context.fillRect(rect.left, rect.top, rect.width, rect.height);
-  context.fillStyle = block.textColor;
-  context.font = buildFont(fontSizePx);
-  context.textBaseline = "top";
-  context.textAlign = block.textAlign;
-  const wrapped = measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
-  const textX =
-    block.textAlign === "left"
-      ? rect.left + paddingPx + TEXT_FIT_SAFETY_PX
-      : block.textAlign === "right"
-        ? rect.left + rect.width - paddingPx - TEXT_FIT_SAFETY_PX
-        : rect.left + rect.width / 2;
-  const startY =
-    rect.top +
-    paddingPx +
-    TEXT_FIT_SAFETY_PX +
-    Math.max(0, (fitInnerHeight - wrapped.totalHeight) / 2);
-
-  if (block.renderDirection === "rotated") {
-    context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    context.rotate((-8 * Math.PI) / 180);
-    const rotatedWrapped = measureWrappedText(context, displayText, fitInnerWidth, fontSizePx * block.lineHeight);
-    const rotatedStartY = -rect.height / 2 + paddingPx + TEXT_FIT_SAFETY_PX + Math.max(0, (fitInnerHeight - rotatedWrapped.totalHeight) / 2);
-    drawWrappedText(
-      context,
-      rotatedWrapped.lines,
-      textX - (rect.left + rect.width / 2),
-      rotatedStartY,
-      fitInnerWidth,
-      fontSizePx * block.lineHeight,
-      block.textAlign
-    );
-  } else {
-    drawWrappedText(context, wrapped.lines, textX, startY, fitInnerWidth, fontSizePx * block.lineHeight, block.textAlign);
-  }
-  context.restore();
-}
-
-function drawWrappedText(
-  context: CanvasRenderingContext2D,
-  lines: string[],
-  x: number,
-  y: number,
-  maxWidth: number,
-  lineHeight: number,
-  align: "left" | "center" | "right" = "left"
-): void {
-  context.textAlign = align;
-  for (const [index, line] of lines.entries()) {
-    context.fillText(line, x, y + index * lineHeight, maxWidth);
-  }
 }
 
 function resolveTextFontSizePx(

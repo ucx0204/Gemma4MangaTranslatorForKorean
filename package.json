@@ -14,6 +14,7 @@
     "preview": "npm run build && node scripts/preview.cjs"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },

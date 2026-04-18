@@ -399,3 +399,10 @@ button:hover:not(:disabled) {
 .empty-state p {
   color: #b8b1a6;
 }
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}

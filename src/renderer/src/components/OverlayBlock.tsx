@@ -1,6 +1,6 @@
 import React from "react";
 import type { TranslationBlock } from "../../../shared/types";
-import { hexToRgba, resolveBlockTextLayout, type ViewportSize } from "../lib/renderPageToPng";
+import { hexToRgba, resolveBlockTextLayout, type ViewportSize } from "../lib/overlayLayout";
 
 type OverlayBlockProps = {
   block: TranslationBlock;

@@ -1,11 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
-import { getLogPath, logError, logInfo, logWarn, writeLog } from "./logger";
-import { normalizeLoadedProject } from "./project";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { getLogPath, logError, logInfo, writeLog } from "./logger";
 import { runWholePagePipeline } from "./wholePagePipeline";
-import type { JobEvent, MangaPage, MangaProject, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+import type { JobEvent, MangaPage, PageImportMode, PageImportResult, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+
+type ZipEntryLike = {
+  entryName: string;
+  isDirectory: boolean;
+  getData: () => Buffer;
+};
+
+type AdmZipLike = {
+  getEntries: () => ZipEntryLike[];
+};
+
+const AdmZip = require("adm-zip") as {
+  new (archivePath: string): AdmZipLike;
+};
 
 logInfo("Application process starting", {
   cwd: process.cwd(),
@@ -116,76 +129,54 @@ function registerIpc(): void {
     return await Promise.all(result.filePaths.map((filePath) => imagePathToPage(filePath)));
   });
 
-  ipcMain.handle("images:open-folder", async () => {
+  ipcMain.handle("images:open-folder", async (_event, existingPageCount = 0): Promise<PageImportResult> => {
     const options = {
       title: "이미지 폴더 열기",
       properties: ["openDirectory"]
     } satisfies Electron.OpenDialogOptions;
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) {
-      return [];
+      return { mode: "cancelled", pages: [] };
     }
 
     const filePaths = await listImageFiles(result.filePaths[0]);
-    return await Promise.all(filePaths.map((filePath) => imagePathToPage(filePath)));
-  });
-
-  ipcMain.handle("project:save", async (_event, project: MangaProject) => {
-    const options = {
-      title: "프로젝트 저장",
-      defaultPath: "manga-translation.manga-translate.json",
-      filters: [{ name: "Manga Translation Project", extensions: ["manga-translate.json", "json"] }]
-    } satisfies Electron.SaveDialogOptions;
-    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
-    if (result.canceled || !result.filePath) {
-      return { saved: false };
+    if (!filePaths.length) {
+      return { mode: "cancelled", pages: [] };
     }
 
-    await mkdir(dirname(result.filePath), { recursive: true });
-    await writeFile(result.filePath, JSON.stringify(stripProjectForSave(project), null, 2), "utf8");
-    return { saved: true, filePath: result.filePath };
+    const mode = await promptImportMode(existingPageCount);
+    if (mode === "cancelled") {
+      return { mode, pages: [] };
+    }
+
+    return {
+      mode,
+      pages: await Promise.all(filePaths.map((filePath) => imagePathToPage(filePath)))
+    };
   });
 
-  ipcMain.handle("project:load", async () => {
+  ipcMain.handle("images:open-zip", async (_event, existingPageCount = 0): Promise<PageImportResult> => {
     const options = {
-      title: "프로젝트 열기",
+      title: "압축파일 열기",
       properties: ["openFile"],
-      filters: [{ name: "Manga Translation Project", extensions: ["manga-translate.json", "json"] }]
+      filters: [{ name: "ZIP Archive", extensions: ["zip"] }]
     } satisfies Electron.OpenDialogOptions;
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) {
-      return null;
+      return { mode: "cancelled", pages: [] };
     }
 
-    const raw = await readFile(result.filePaths[0], "utf8");
-    const { project, warnings } = normalizeLoadedProject(JSON.parse(raw));
-    for (const warning of warnings) {
-      logWarn("Project normalization warning", { filePath: result.filePaths[0], warning });
+    const imageEntries = listImageEntriesInZip(result.filePaths[0]);
+    if (!imageEntries.length) {
+      return { mode: "cancelled", pages: [] };
     }
 
-    const pages = await Promise.all(
-      project.pages.map(async (page) => ({
-        ...page,
-        dataUrl: page.dataUrl || (page.imagePath ? await fileToDataUrl(page.imagePath).catch(() => "") : "")
-      }))
-    );
-    return { ...project, pages };
-  });
-
-  ipcMain.handle("export:png", async (_event, dataUrl: string, defaultName: string) => {
-    const options = {
-      title: "PNG 내보내기",
-      defaultPath: defaultName.endsWith(".png") ? defaultName : `${defaultName}.png`,
-      filters: [{ name: "PNG Image", extensions: ["png"] }]
-    } satisfies Electron.SaveDialogOptions;
-    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
-    if (result.canceled || !result.filePath) {
-      return { saved: false };
+    const mode = await promptImportMode(existingPageCount);
+    if (mode === "cancelled") {
+      return { mode, pages: [] };
     }
 
-    const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-    await writeFile(result.filePath, Buffer.from(base64, "base64"));
-    return { saved: true, filePath: result.filePath };
+    return { mode, pages: await loadPagesFromZip(result.filePaths[0], imageEntries) };
   });
 
   ipcMain.handle("job:start-analysis", async (_event, request: StartAnalysisRequest): Promise<StartAnalysisResult> => {
@@ -308,12 +299,12 @@ function registerIpc(): void {
   });
 }
 
-async function imagePathToPage(filePath: string): Promise<MangaPage> {
+async function imagePathToPage(filePath: string, pageName = basename(filePath)): Promise<MangaPage> {
   const image = nativeImage.createFromPath(filePath);
   const size = image.getSize();
   return {
     id: randomUUID(),
-    name: basename(filePath),
+    name: pageName,
     imagePath: filePath,
     dataUrl: await fileToDataUrl(filePath),
     width: size.width || 1000,
@@ -328,6 +319,61 @@ async function listImageFiles(folderPath: string): Promise<string[]> {
     .filter((entry) => entry.isFile() && isSupportedImagePath(entry.name))
     .map((entry) => join(folderPath, entry.name))
     .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function listImageEntriesInZip(zipPath: string): ZipEntryLike[] {
+  const zip = new AdmZip(zipPath);
+  return zip
+    .getEntries()
+    .filter((entry) => !entry.isDirectory && isSupportedImagePath(entry.entryName))
+    .sort((left, right) => left.entryName.localeCompare(right.entryName, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+async function loadPagesFromZip(zipPath: string, imageEntries: ZipEntryLike[]): Promise<MangaPage[]> {
+  const extractRoot = await mkdtemp(join(app.getPath("temp"), "manga-translator-zip-"));
+  const pages: MangaPage[] = [];
+  const zip = new AdmZip(zipPath);
+  const zipEntries = new Map(zip.getEntries().map((entry) => [entry.entryName, entry] as const));
+
+  for (const [index, entry] of imageEntries.entries()) {
+    const sourceEntry = zipEntries.get(entry.entryName);
+    if (!sourceEntry) {
+      continue;
+    }
+    const ext = extname(entry.entryName).toLowerCase() || ".png";
+    const fileName = `${String(index + 1).padStart(3, "0")}-${sanitizeImportFileName(entry.entryName, ext)}`;
+    const outputPath = join(extractRoot, fileName);
+    await writeFile(outputPath, sourceEntry.getData());
+    pages.push(await imagePathToPage(outputPath, normalizeImportPageName(entry.entryName)));
+  }
+
+  return pages;
+}
+
+async function promptImportMode(existingPageCount: number): Promise<PageImportMode> {
+  if (existingPageCount <= 0) {
+    return "append";
+  }
+
+  const options = {
+    type: "question",
+    buttons: ["기존 페이지에 추가", "기존 페이지 교체", "취소"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "불러오기 방식 선택",
+    message: "기존 페이지가 이미 있습니다.",
+    detail: `${existingPageCount}페이지가 열려 있습니다. 새 이미지를 덧붙일지, 기존 페이지를 비우고 다시 불러올지 선택해 주세요.`,
+    noLink: true
+  } satisfies Electron.MessageBoxOptions;
+  const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+
+  if (result.response === 1) {
+    return "replace";
+  }
+  if (result.response === 0) {
+    return "append";
+  }
+  return "cancelled";
 }
 
 function isSupportedImagePath(filePath: string): boolean {
@@ -350,19 +396,14 @@ function mimeFromPath(filePath: string): string {
   return "image/png";
 }
 
-function stripProjectForSave(project: MangaProject): MangaProject {
-  return {
-    ...project,
-    pages: project.pages.map((page) => ({
-      ...page,
-      blocks: page.blocks.map((block) => ({
-        ...block,
-        bboxSpace: "normalized_1000",
-        renderBboxSpace: block.renderBbox ? "normalized_1000" : undefined
-      })),
-      dataUrl: ""
-    }))
-  };
+function sanitizeImportFileName(entryName: string, fallbackExt: string): string {
+  const ext = extname(entryName).toLowerCase() || fallbackExt;
+  const stem = entryName.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "") || "page";
+  return `${stem.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-")}${ext}`;
+}
+
+function normalizeImportPageName(entryName: string): string {
+  return entryName.replace(/\\/g, "/");
 }
 
 function isAbortError(error: unknown): boolean {

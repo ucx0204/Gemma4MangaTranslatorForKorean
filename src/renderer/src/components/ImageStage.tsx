@@ -1,6 +1,6 @@
 import React from "react";
 import type { MangaPage, TranslationBlock } from "../../../shared/types";
-import type { ViewportSize } from "../lib/renderPageToPng";
+import type { ViewportSize } from "../lib/overlayLayout";
 import { OverlayBlock } from "./OverlayBlock";
 
 type ImageStageProps = {

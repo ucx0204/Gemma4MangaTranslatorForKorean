@@ -1,5 +1,5 @@
 import { useEffect, useState, type RefObject } from "react";
-import type { ViewportSize } from "../lib/renderPageToPng";
+import type { ViewportSize } from "../lib/overlayLayout";
 
 export function useStageSize(
   imageRef: RefObject<HTMLImageElement | null>,

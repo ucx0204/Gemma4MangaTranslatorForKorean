@@ -1,12 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { JobEvent, MangaProject, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+import type { JobEvent, MangaPage, PageImportResult, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
 const api = {
-  openImages: () => ipcRenderer.invoke("images:open"),
-  openImageFolder: () => ipcRenderer.invoke("images:open-folder"),
-  saveProject: (project: MangaProject) => ipcRenderer.invoke("project:save", project),
-  loadProject: () => ipcRenderer.invoke("project:load"),
-  exportPng: (dataUrl: string, defaultName: string) => ipcRenderer.invoke("export:png", dataUrl, defaultName),
+  openImages: (): Promise<MangaPage[]> => ipcRenderer.invoke("images:open"),
+  openImageFolder: (existingPageCount: number): Promise<PageImportResult> => ipcRenderer.invoke("images:open-folder", existingPageCount),
+  openZipArchive: (existingPageCount: number): Promise<PageImportResult> => ipcRenderer.invoke("images:open-zip", existingPageCount),
   getLogPath: (): Promise<string> => ipcRenderer.invoke("logs:get-path"),
   openLogFolder: () => ipcRenderer.invoke("logs:open-folder"),
   writeLog: (level: "debug" | "info" | "warn" | "error", message: string, detail?: unknown) =>

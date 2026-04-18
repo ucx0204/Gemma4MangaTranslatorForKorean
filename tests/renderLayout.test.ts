@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBlockPaddingPx } from "../src/renderer/src/lib/renderPageToPng";
+import { resolveBlockPaddingPx } from "../src/renderer/src/lib/overlayLayout";
 
 describe("render layout padding", () => {
   it("uses the increased minimum and maximum block padding", () => {
