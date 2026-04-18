@@ -10,10 +10,33 @@ const REQUIRED_FILES = [
   "chat_template.jinja"
 ];
 
+function defaultServerPath(root) {
+  return join(root, "tools", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
+}
+
+function resolveServerPath(options = {}) {
+  const root = options.root ?? join(__dirname, "..");
+  const binaryName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  const fallbackPath = defaultServerPath(root);
+  const candidates = [
+    options.serverPath,
+    process.env.LLAMA_SERVER_PATH,
+    fallbackPath,
+    ...findCommandPaths(binaryName)
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return fallbackPath;
+}
+
 function ensureSupergemmaRuntime(options = {}) {
   const root = options.root ?? join(__dirname, "..");
-  const serverPath =
-    options.serverPath ?? join(root, "tmp", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
+  const serverPath = resolveServerPath(options);
 
   if (!existsSync(serverPath)) {
     throw new Error(`llama-server binary is missing: ${serverPath}`);
@@ -89,6 +112,24 @@ function commandWorks(command, args, cwd) {
     shell: false
   });
   return !result.error && result.status === 0;
+}
+
+function findCommandPaths(binaryName) {
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const result = spawnSync(locator, [binaryName], {
+    stdio: ["ignore", "pipe", "ignore"],
+    shell: false,
+    encoding: "utf8"
+  });
+
+  if (result.error || result.status !== 0) {
+    return [];
+  }
+
+  return String(result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function runOrThrow(command, args, cwd) {

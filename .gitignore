@@ -8,6 +8,7 @@ scripts/__pycache__/
 tmp-tiles/
 tmp-*.png
 tmp/
+tools/llama-b8808-cuda12/
 models/
 testProject1/
 logs/*

@@ -10,7 +10,7 @@ const ROOT = path.resolve(__dirname, "../..");
 const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 const DEFAULT_API_KEY = "local-llama-server";
-const DEFAULT_SERVER_PATH = path.join(ROOT, "tmp", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
+const DEFAULT_SERVER_PATH = path.join(ROOT, "tools", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
 
 const PROMPT_KO_BBOX_LINES_MULTIVIEW = [
   "You are given the same Japanese manga page in multiple full-page renderings.",

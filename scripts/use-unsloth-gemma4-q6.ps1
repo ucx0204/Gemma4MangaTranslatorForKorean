@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 
-$env:LLAMA_SERVER_PATH = Join-Path $root "tmp\\llama-b8808-cuda12\\llama-server.exe"
+$env:LLAMA_SERVER_PATH = Join-Path $root "tools\\llama-b8808-cuda12\\llama-server.exe"
 $env:MANGA_TRANSLATOR_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF"
 $env:LLAMA_ARG_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf"
 $env:MANGA_TRANSLATOR_MODEL = $env:MANGA_TRANSLATOR_MODEL_HF
