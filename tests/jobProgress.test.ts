@@ -12,8 +12,8 @@ describe("job progress helpers", () => {
         phase: "page_running",
         pageIndex: 3,
         pageTotal: 20,
-        progressCurrent: 5,
-        progressTotal: 23
+        progressCurrent: 3,
+        progressTotal: 20
       })
     ).toBe("3 / 20 페이지 번역 중");
 
@@ -30,11 +30,15 @@ describe("job progress helpers", () => {
   });
 
   it("returns a clamped determinate progress snapshot", () => {
-    expect(resolveProgressSnapshot({ status: "running", progressCurrent: 24, progressTotal: 23 })).toEqual({
-      current: 23,
-      total: 23,
+    expect(resolveProgressSnapshot({ status: "running", progressCurrent: 21, progressTotal: 20 })).toEqual({
+      current: 20,
+      total: 20,
       ratio: 1
     });
+  });
+
+  it("keeps the finalizing label unchanged", () => {
+    expect(formatJobLabel({ status: "running", phase: "finalizing" })).toBe("결과 정리 중");
   });
 
   it("summarizes warnings into a short user-facing sentence", () => {

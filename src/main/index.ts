@@ -238,8 +238,8 @@ function registerIpc(): void {
         status: "completed",
         progressText: "번역 작업 완료",
         phase: "done",
-        progressCurrent: request.pages.length + 3,
-        progressTotal: request.pages.length + 3,
+        progressCurrent: request.pages.length,
+        progressTotal: request.pages.length,
         pageTotal: request.pages.length
       });
       return { status: "completed", pages: result.pages, warnings: result.warnings };

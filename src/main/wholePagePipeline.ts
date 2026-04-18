@@ -86,7 +86,7 @@ export async function runWholePagePipeline({
   throwIfAborted(signal);
 
   const baseOptions = buildBaseOptions(jobId);
-  const progressTotal = pages.length + 3;
+  const progressTotal = pages.length;
   emit({
     id: jobId,
     kind: "gemma-analysis",
@@ -110,7 +110,7 @@ export async function runWholePagePipeline({
     status: "running",
     progressText: "모델 준비 완료",
     phase: "ready",
-    progressCurrent: 1,
+    progressCurrent: 0,
     progressTotal,
     pageTotal: pages.length,
     detail: `server ready on port ${baseOptions.port}`
@@ -135,7 +135,7 @@ export async function runWholePagePipeline({
           status: "running",
           progressText: `${page.name} 분석 중`,
           phase: "page_running",
-          progressCurrent: 1 + index,
+          progressCurrent: index + 1,
           progressTotal,
           pageIndex: index + 1,
           pageTotal: pages.length,
@@ -178,7 +178,7 @@ export async function runWholePagePipeline({
             status: "running",
             progressText: `${page.name} 완료`,
             phase: "page_done",
-            progressCurrent: 2 + index,
+            progressCurrent: index + 1,
             progressTotal,
             pageIndex: index + 1,
             pageTotal: pages.length,
@@ -200,7 +200,7 @@ export async function runWholePagePipeline({
               status: "running",
               progressText: `${page.name} 재시도`,
               phase: "page_retry",
-              progressCurrent: 1 + index,
+              progressCurrent: index + 1,
               progressTotal,
               pageIndex: index + 1,
               pageTotal: pages.length,
@@ -229,7 +229,7 @@ export async function runWholePagePipeline({
         status: "running",
         progressText: `${page.name} 건너뜀`,
         phase: "page_skipped",
-        progressCurrent: 2 + index,
+        progressCurrent: index + 1,
         progressTotal,
         pageIndex: index + 1,
         pageTotal: pages.length,
@@ -243,7 +243,7 @@ export async function runWholePagePipeline({
       status: "running",
       progressText: "결과 정리 중",
       phase: "finalizing",
-      progressCurrent: progressTotal - 1,
+      progressCurrent: progressTotal,
       progressTotal,
       pageTotal: pages.length,
       detail: `${nextPages.length} pages ready`

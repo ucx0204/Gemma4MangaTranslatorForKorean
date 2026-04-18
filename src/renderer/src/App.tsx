@@ -161,7 +161,7 @@ export default function App(): React.JSX.Element {
       progressText: "모델 준비 중",
       phase: "booting",
       progressCurrent: 0,
-      progressTotal: pages.length + 3,
+      progressTotal: pages.length,
       pageTotal: pages.length
     });
 
