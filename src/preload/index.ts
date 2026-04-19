@@ -1,10 +1,31 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { JobEvent, MangaPage, PageImportResult, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+import type {
+  ChapterSnapshot,
+  CreateImportRequest,
+  CreateImportResult,
+  ImportPreviewResult,
+  JobEvent,
+  LibraryIndex,
+  StartAnalysisRequest,
+  StartAnalysisResult
+} from "../shared/types";
 
 const api = {
-  openImages: (): Promise<MangaPage[]> => ipcRenderer.invoke("images:open"),
-  openImageFolder: (existingPageCount: number): Promise<PageImportResult> => ipcRenderer.invoke("images:open-folder", existingPageCount),
-  openZipArchive: (existingPageCount: number): Promise<PageImportResult> => ipcRenderer.invoke("images:open-zip", existingPageCount),
+  previewImagesImport: (): Promise<ImportPreviewResult | null> => ipcRenderer.invoke("import:preview-images"),
+  previewFolderImport: (): Promise<ImportPreviewResult | null> => ipcRenderer.invoke("import:preview-folder"),
+  previewZipImport: (): Promise<ImportPreviewResult | null> => ipcRenderer.invoke("import:preview-zip"),
+  previewZipFolderImport: (): Promise<ImportPreviewResult | null> => ipcRenderer.invoke("import:preview-zip-folder"),
+  createImport: (request: CreateImportRequest): Promise<CreateImportResult> => ipcRenderer.invoke("import:create", request),
+  getLibrary: (): Promise<LibraryIndex> => ipcRenderer.invoke("library:get-index"),
+  openLibraryFolder: () => ipcRenderer.invoke("library:open-folder"),
+  openChapter: (chapterId: string): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:open-chapter", chapterId),
+  saveChapter: (chapter: ChapterSnapshot): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:save-chapter", chapter),
+  renameWork: (workId: string, title: string): Promise<LibraryIndex> => ipcRenderer.invoke("library:rename-work", workId, title),
+  renameChapter: (chapterId: string, title: string): Promise<LibraryIndex> => ipcRenderer.invoke("library:rename-chapter", chapterId, title),
+  reorderChapters: (workId: string, chapterIds: string[]): Promise<LibraryIndex> => ipcRenderer.invoke("library:reorder-chapters", workId, chapterIds),
+  reorderPages: (chapterId: string, pageIds: string[]): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:reorder-pages", chapterId, pageIds),
+  deletePage: (chapterId: string, pageId: string): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:delete-page", chapterId, pageId),
+  confirm: (title: string, message: string, detail?: string): Promise<boolean> => ipcRenderer.invoke("dialogs:confirm", title, message, detail),
   getLogPath: (): Promise<string> => ipcRenderer.invoke("logs:get-path"),
   openLogFolder: () => ipcRenderer.invoke("logs:open-folder"),
   writeLog: (level: "debug" | "info" | "warn" | "error", message: string, detail?: unknown) =>

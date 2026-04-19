@@ -67,7 +67,7 @@ export function offsetBlockBboxes(block: TranslationBlock, dx: number, dy: numbe
 }
 
 export function enforceRenderDirection(_type: BlockType, direction: RenderTextDirection): RenderTextDirection {
-  return direction === "rotated" || direction === "hidden" ? direction : "horizontal";
+  return direction === "vertical" || direction === "rotated" || direction === "hidden" ? direction : "horizontal";
 }
 
 export function normalizeBlockType(value: unknown): BlockType {
@@ -91,7 +91,7 @@ export function normalizeSourceDirection(value: unknown, fallback: SourceTextDir
 
 export function normalizeRenderDirection(value: unknown, fallback: RenderTextDirection): RenderTextDirection {
   const text = String(value ?? "").trim().toLowerCase();
-  return text === "horizontal" || text === "rotated" || text === "hidden" ? text : fallback;
+  return text === "horizontal" || text === "vertical" || text === "rotated" || text === "hidden" ? text : fallback;
 }
 
 export function normalizeTextAlign(value: unknown): "left" | "center" | "right" {

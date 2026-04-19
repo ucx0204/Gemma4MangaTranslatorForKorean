@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyEditableBlockBbox, clampBbox, estimateBlockFontSizePx, offsetBlockBboxes, resolveBlockRenderBbox } from "../src/shared/geometry";
+import {
+  applyEditableBlockBbox,
+  clampBbox,
+  enforceRenderDirection,
+  estimateBlockFontSizePx,
+  normalizeRenderDirection,
+  offsetBlockBboxes,
+  resolveBlockRenderBbox
+} from "../src/shared/geometry";
 
 describe("geometry helpers", () => {
   it("clamps normalized boxes to the 0-1000 coordinate space", () => {
@@ -91,5 +99,10 @@ describe("geometry helpers", () => {
 
     expect(duplicated.bbox).toEqual({ x: 116, y: 116, w: 80, h: 120 });
     expect(duplicated.renderBbox).toEqual({ x: 96, y: 106, w: 220, h: 260 });
+  });
+
+  it("allows vertical render direction for manual editing", () => {
+    expect(enforceRenderDirection("speech", "vertical")).toBe("vertical");
+    expect(normalizeRenderDirection("vertical", "horizontal")).toBe("vertical");
   });
 });

@@ -1,7 +1,7 @@
 export type BlockType = "speech" | "sfx" | "caption" | "other";
 
 export type SourceTextDirection = "horizontal" | "vertical";
-export type RenderTextDirection = "horizontal" | "rotated" | "hidden";
+export type RenderTextDirection = "horizontal" | "vertical" | "rotated" | "hidden";
 
 export type JobKind = "gemma-analysis";
 
@@ -25,6 +25,14 @@ export type JobPhase =
   | "done"
   | "cancelled"
   | "failed";
+
+export type PageAnalysisStatus = "idle" | "running" | "completed" | "failed";
+
+export type ChapterStatus = "idle" | "running" | "completed" | "partial" | "failed";
+
+export type RunMode = "pending" | "all" | "single-page";
+
+export type ImportSourceKind = "images" | "folder" | "zip" | "zip-folder";
 
 export type BBox = {
   x: number;
@@ -62,13 +70,98 @@ export type MangaPage = {
   width: number;
   height: number;
   blocks: TranslationBlock[];
+  analysisStatus: PageAnalysisStatus;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
-export type PageImportMode = "append" | "replace" | "cancelled";
+export type LibraryPageRecord = Omit<MangaPage, "dataUrl">;
 
-export type PageImportResult = {
-  mode: PageImportMode;
+export type LibraryChapter = {
+  id: string;
+  workId: string;
+  title: string;
+  sourceKind: ImportSourceKind;
+  status: ChapterStatus;
+  pageOrder: string[];
+  pages: LibraryPageRecord[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChapterSnapshot = Omit<LibraryChapter, "pages"> & {
   pages: MangaPage[];
+};
+
+export type LibraryChapterSummary = Pick<LibraryChapter, "id" | "workId" | "title" | "status" | "createdAt" | "updatedAt"> & {
+  pageCount: number;
+};
+
+export type LibraryWork = {
+  id: string;
+  title: string;
+  chapterOrder: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LibraryWorkSummary = LibraryWork & {
+  chapters: LibraryChapterSummary[];
+};
+
+export type LibraryIndex = {
+  workOrder: string[];
+  works: LibraryWorkSummary[];
+};
+
+export type ImportPageDraft = {
+  name: string;
+  sourcePath: string;
+  sourceKind: "file" | "zip-entry";
+  zipEntryName?: string;
+};
+
+export type ImportChapterDraft = {
+  draftId: string;
+  title: string;
+  sourceKind: ImportSourceKind;
+  pages: ImportPageDraft[];
+};
+
+export type ImportPreviewResult = {
+  mode: "single" | "batch";
+  sourceKind: ImportSourceKind;
+  suggestedWorkTitle: string;
+  chapters: ImportChapterDraft[];
+};
+
+export type ImportTarget =
+  | {
+      mode: "new";
+      title: string;
+    }
+  | {
+      mode: "existing";
+      workId: string;
+    };
+
+export type ImportCreateSelection = {
+  draftId: string;
+  title: string;
+  enabled: boolean;
+};
+
+export type CreateImportRequest = {
+  preview: ImportPreviewResult;
+  target: ImportTarget;
+  selections: ImportCreateSelection[];
+};
+
+export type CreateImportResult = {
+  workId: string;
+  chapterIds: string[];
+  openedChapter?: ChapterSnapshot;
 };
 
 export type JobState = {
@@ -89,15 +182,15 @@ export type JobEvent = JobState & {
   detail?: string;
 };
 
-export type AnalysisRequestPage = Pick<MangaPage, "id" | "name" | "imagePath" | "dataUrl" | "width" | "height">;
-
 export type StartAnalysisRequest = {
-  pages: AnalysisRequestPage[];
+  chapterId: string;
+  runMode: RunMode;
+  pageId?: string;
 };
 
 export type StartAnalysisResult = {
   status: "completed" | "cancelled" | "failed";
-  pages?: MangaPage[];
+  chapter?: ChapterSnapshot;
   warnings?: string[];
   error?: string;
 };

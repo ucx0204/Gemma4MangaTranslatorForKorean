@@ -11,17 +11,19 @@ Gemma 4가 페이지 전체를 직접 보고:
 ## 현재 구조
 
 - `src/main/index.ts`
-  Electron IPC와 이미지/폴더/ZIP 불러오기
+  Electron IPC와 보관함/가져오기/번역 제어
+- `src/main/library.ts`
+  보관함 저장 구조와 작품/화/페이지 파일 관리
 - `src/main/wholePagePipeline.ts`
   전체 페이지 분석 파이프라인
-- `src/shared/types.ts`
-  최소 페이지/블록 타입
-- `src/renderer/src/App.tsx`
-  페이지 목록, 오버레이 편집, 실행 UI
-- `logs/runtime/simple-page-translate.cjs`
+- `src/main/runtime/simple-page-translate.cjs`
   `llama-server` 요청 헬퍼
-- `logs/runtime/overlay-parser.cjs`
+- `src/main/runtime/overlay-parser.cjs`
   bbox/line-format 파서
+- `src/shared/types.ts`
+  보관함, 화, 페이지, 번역 타입
+- `src/renderer/src/App.tsx`
+  보관함, 작품 일괄 번역, 페이지별 재번역 UI
 
 ## 실행
 
@@ -51,12 +53,13 @@ npm run build
 
 ## 기본 동작
 
-- 이미지를 열면 원본 페이지가 그대로 들어옵니다.
-- `폴더 열기`는 기존 페이지가 있을 때 `추가` 또는 `교체`를 고를 수 있습니다.
-- `압축파일 열기`는 ZIP 안의 이미지 파일을 바로 페이지 목록으로 불러옵니다.
-- `페이지 전체 번역`을 누르면 앱이 `whole-page -> bbox -> Korean overlay` 방식으로 블록을 생성합니다.
-- 생성된 블록은 바로 드래그/리사이즈/수정할 수 있습니다.
-- 중간 산출물은 `logs/app-jobs` 아래에 페이지별로 저장됩니다.
+- 이미지를 열면 보관함에 `작품 > 화` 구조로 저장됩니다.
+- `폴더 열기`, `압축파일 열기`, `작품 일괄 번역`은 먼저 미리보기 모달을 띄우고 작품을 새로 만들지 기존 작품에 추가할지 고릅니다.
+- `작품 일괄 번역`은 선택한 폴더 바로 아래 ZIP들을 화 목록으로 만들고, 확인 후 순차 번역을 시작합니다.
+- `이어서 번역`은 아직 완료되지 않은 페이지들만 다시 돌리고, `전체 다시 번역`은 현재 화 전체를 다시 생성합니다.
+- 각 페이지 옆의 `재번역` 버튼으로 한 페이지씩 다시 돌릴 수 있고, `삭제` 버튼은 확인 후 보관함에서 제거합니다.
+- 생성된 블록은 바로 드래그/리사이즈/수정할 수 있고, 편집 모드에서는 텍스트 방향에 `vertical`도 선택할 수 있습니다.
+- 번역 결과와 원본 이미지는 `library/` 아래에 저장되며, 실행 로그는 `logs/app.log`만 사용합니다.
 
 ## 기본 모델 설정
 
@@ -70,7 +73,7 @@ $env:MANGA_TRANSLATOR_IMAGE_MIN_TOKENS = "1120"
 $env:MANGA_TRANSLATOR_IMAGE_MAX_TOKENS = "1120"
 ```
 
-앱은 `logs/runtime` 아래의 최소 whole-page 런타임만 사용합니다.
+앱은 `src/main/runtime` 아래의 최소 whole-page 런타임만 사용합니다.
 
 ## 테스트
 

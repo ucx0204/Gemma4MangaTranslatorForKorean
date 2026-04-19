@@ -1,11 +1,11 @@
 import type { TranslationBlock } from "../../../shared/types";
 import { bboxToPixels, clamp, resolveBlockRenderBbox } from "../../../shared/geometry";
 
-const MIN_FONT_SIZE_PX = 8;
+const MIN_FONT_SIZE_PX = 2;
 const MAX_AUTOFIT_FONT_SIZE_PX = 256;
 const MIN_BLOCK_PADDING_PX = 5;
 const MAX_BLOCK_PADDING_PX = 14;
-const MIN_INNER_SIZE_PX = 12;
+const MIN_INNER_SIZE_PX = 1;
 const TEXT_FIT_SAFETY_PX = 6;
 const TEXT_MEASURE_GUARD_PX = TEXT_FIT_SAFETY_PX + 4;
 
@@ -120,6 +120,10 @@ function resolveTextFontSizePx(
 }
 
 function doesTextFit(block: TranslationBlock, text: string, fontSize: number, innerWidth: number, innerHeight: number): boolean {
+  if (block.renderDirection === "vertical") {
+    return measureVerticalText(text, fontSize, innerWidth, innerHeight, fontSize * block.lineHeight).fits;
+  }
+
   const context = getMeasureContext();
   context.font = buildFont(fontSize);
   return measureWrappedText(context, text, innerWidth, fontSize * block.lineHeight).totalHeight <= innerHeight;
@@ -175,6 +179,27 @@ function resolveAutoFitUpperBound(block: TranslationBlock, preferredFontSize: nu
   }
 
   return clamp(Math.max(preferredFontSize, innerWidth, innerHeight), MIN_FONT_SIZE_PX, MAX_AUTOFIT_FONT_SIZE_PX);
+}
+
+function measureVerticalText(
+  text: string,
+  fontSize: number,
+  maxWidth: number,
+  maxHeight: number,
+  lineHeight: number
+): { columnCount: number; fits: boolean } {
+  const compact = text.replace(/\r/g, "").replace(/\s+/g, "");
+  if (!compact) {
+    return { columnCount: 0, fits: true };
+  }
+
+  const charsPerColumn = Math.max(1, Math.floor(maxHeight / Math.max(fontSize, lineHeight)));
+  const columnCount = Math.max(1, Math.ceil(compact.length / charsPerColumn));
+  const estimatedColumnWidth = fontSize * 1.15;
+  return {
+    columnCount,
+    fits: columnCount * estimatedColumnWidth <= maxWidth
+  };
 }
 
 function getMeasureContext(): CanvasRenderingContext2D {

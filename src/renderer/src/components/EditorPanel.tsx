@@ -47,6 +47,7 @@ export function EditorPanel({ block, disabled, onUpdate, onDelete, onDuplicate }
           onChange={(event) => onUpdate({ renderDirection: event.target.value as RenderTextDirection })}
         >
           <option value="horizontal">horizontal</option>
+          <option value="vertical">vertical</option>
           <option value="rotated">rotated</option>
           <option value="hidden">hidden</option>
         </select>

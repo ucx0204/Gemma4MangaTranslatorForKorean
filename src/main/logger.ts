@@ -44,6 +44,13 @@ export function writeLog(level: LogLevel, message: string, detail?: unknown): vo
   }
 }
 
+export function resetAppLog(): void {
+  const logPath = getLogPath();
+  mkdirSync(dirname(logPath), { recursive: true });
+  writeFileSync(logPath, "", "utf8");
+  ensuredLogPath = null;
+}
+
 function writeConsole(level: LogLevel, line: string): void {
   const trimmed = line.trimEnd();
   if (level === "error") {

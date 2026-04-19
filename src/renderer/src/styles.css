@@ -28,7 +28,7 @@ button {
   border: 1px solid #3d4147;
   background: #24282f;
   color: #f5f0e8;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 9px 12px;
   cursor: pointer;
 }
@@ -46,6 +46,17 @@ button:hover:not(:disabled) {
   background: #303846;
 }
 
+input,
+select,
+textarea {
+  width: 100%;
+  color: #f5f0e8;
+  border: 1px solid #3d4147;
+  border-radius: 8px;
+  background: #111318;
+  padding: 8px;
+}
+
 .primary {
   background: #2f6f61;
   border-color: #4aa58f;
@@ -56,98 +67,136 @@ button:hover:not(:disabled) {
   border-color: #c56363;
 }
 
+.ghost-button,
+.page-mini {
+  padding: 6px 10px;
+  background: #1a1d22;
+  border-color: #343941;
+  font-size: 12px;
+}
+
 .app-shell {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr) 320px;
+  grid-template-columns: 400px minmax(0, 1fr) 340px;
   height: 100vh;
   background: #101114;
 }
 
-.sidebar {
+.sidebar,
+.right-rail {
   display: flex;
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
   min-height: 0;
+  padding: 18px;
+}
+
+.sidebar {
   border-right: 1px solid #2e3137;
   background: #17191e;
-  padding: 18px;
 }
 
-.editor-dock {
-  overflow: auto;
-  min-height: 0;
+.right-rail {
   border-left: 1px solid #2e3137;
   background: #15181d;
-  padding: 18px;
 }
 
-.muted p,
-.status-panel p,
-.page-item small {
-  color: #b8b1a6;
+.workspace {
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  background: radial-gradient(circle at top, rgba(60, 76, 95, 0.28), transparent 40%), #101114;
 }
 
-.status-panel p {
-  overflow-wrap: anywhere;
+.toolbar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
-.toolbar,
 .run-panel,
+.library-panel,
 .page-list,
 .editor-panel,
 .status-panel {
   display: grid;
   gap: 10px;
-}
-
-.toolbar {
-  grid-template-columns: 1fr 1fr;
-}
-
-.run-panel,
-.page-list,
-.editor-panel,
-.status-panel {
   padding: 12px;
   border: 1px solid #333841;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #1c1f25;
 }
 
+.library-panel,
+.page-list,
+.status-panel {
+  min-height: 0;
+}
+
+.library-panel {
+  flex: 1 1 280px;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.page-list {
+  flex: 1 1 260px;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.status-panel {
+  flex: 1 1 220px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.editor-panel {
+  align-content: start;
+}
+
 .panel-header,
+.run-title,
 .page-list h2,
 .editor-panel h2,
-.status-panel h2 {
+.status-panel h2,
+.library-panel h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin: 0;
+  gap: 8px;
+}
+
+.panel-header h2,
+.status-panel h2,
+.editor-panel h2,
+.library-panel h2 {
   margin: 0;
   font-size: 13px;
   text-transform: uppercase;
   color: #d6cbbb;
 }
 
-.page-list,
-.status-panel {
-  min-height: 0;
+.run-title {
+  flex-direction: column;
+  align-items: flex-start;
 }
 
-.page-list {
-  flex: 1 1 240px;
-  grid-template-rows: auto minmax(0, 1fr);
+.run-title h2 {
+  margin: 0;
+  font-size: 18px;
+  color: #f3ecdf;
 }
 
-.status-panel {
-  flex: 0 0 220px;
-  grid-template-rows: auto auto minmax(0, 1fr);
+.run-title small,
+.status-panel p,
+.page-item small,
+.chapter-item small,
+.draft-meta {
+  color: #b8b1a6;
 }
 
-.editor-panel {
-  display: grid;
-  align-content: start;
-}
-
+.library-scroll,
 .page-list-scroll,
 .status-log-scroll {
   min-height: 0;
@@ -158,13 +207,105 @@ button:hover:not(:disabled) {
   padding-right: 4px;
 }
 
+.work-group {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #16191e;
+  border: 1px solid #2b3138;
+}
+
+.work-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chapter-list {
+  display: grid;
+  gap: 8px;
+}
+
+.chapter-item,
+.page-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.chapter-select,
+.page-select {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  min-width: 0;
+  text-align: left;
+}
+
+.chapter-item span,
+.page-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chapter-item.active .chapter-select,
+.page-item.active .page-select {
+  border-color: #78c7b2;
+  background: #24443d;
+}
+
+.page-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-icon-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.page-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.page-status-badge {
+  min-width: 40px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  border: 1px solid #343941;
+  background: #1a1d22;
+  color: #ddd5ca;
+  font-size: 12px;
+  text-align: center;
+}
+
+.page-remove {
+  color: #f0c7c7;
+  border-color: #5f3939;
+  background: #2f2020;
+}
+
 .status-log-scroll p {
   margin: 0;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #16191e;
   border: 1px solid #2b3138;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .panel-empty,
@@ -174,62 +315,8 @@ button:hover:not(:disabled) {
   font-size: 13px;
 }
 
-.page-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
-  gap: 10px;
-  align-items: stretch;
-}
-
-.page-select {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  text-align: left;
-}
-
-.page-item span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.page-item.active .page-select {
-  border-color: #78c7b2;
-  background: #24443d;
-}
-
-.page-remove {
-  padding: 0;
-  min-width: 36px;
-  color: #f0c7c7;
-  border-color: #5f3939;
-  background: #2f2020;
-}
-
-.editor-panel label {
-  display: grid;
-  gap: 6px;
-  color: #d6cbbb;
-  font-size: 13px;
-}
-
-.editor-panel textarea {
-  min-height: 64px;
-  max-height: 140px;
-  resize: vertical;
-}
-
-.editor-panel input,
-.editor-panel select,
-.editor-panel textarea {
-  width: 100%;
-  color: #f5f0e8;
-  border: 1px solid #3d4147;
-  border-radius: 6px;
-  background: #111318;
-  padding: 8px;
+.muted p {
+  color: #b8b1a6;
 }
 
 .color-row,
@@ -299,18 +386,14 @@ button:hover:not(:disabled) {
   background: #2f6f61;
 }
 
-.workspace {
-  display: grid;
-  place-items: center;
-  overflow: auto;
-  padding: 24px;
-  background: #101114;
-}
-
 .stage-wrap {
   width: min(100%, 1040px);
   display: grid;
   place-items: center;
+}
+
+.workspace-pane {
+  width: min(100%, 1040px);
 }
 
 .image-stage {
@@ -387,7 +470,7 @@ button:hover:not(:disabled) {
 }
 
 .empty-state {
-  max-width: 520px;
+  max-width: 560px;
   text-align: center;
   color: #d8d0c3;
 }
@@ -405,4 +488,104 @@ button:hover:not(:disabled) {
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 8, 10, 0.72);
+  padding: 24px;
+}
+
+.modal-card {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 14px;
+  border: 1px solid #39404a;
+  background: #171a1f;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-header h2,
+.modal-section h3 {
+  margin: 0;
+}
+
+.modal-section {
+  display: grid;
+  gap: 10px;
+}
+
+.radio-row,
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #e6ddcf;
+}
+
+.radio-row input,
+.checkbox-row input {
+  width: auto;
+}
+
+.draft-list {
+  display: grid;
+  gap: 10px;
+}
+
+.draft-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #2f343d;
+  background: #14171b;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 1400px) {
+  .app-shell {
+    grid-template-columns: 340px minmax(0, 1fr) 300px;
+  }
+}
+
+@media (max-width: 1180px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .sidebar,
+  .right-rail {
+    border: 0;
+  }
+
+  .workspace {
+    min-height: 480px;
+  }
 }

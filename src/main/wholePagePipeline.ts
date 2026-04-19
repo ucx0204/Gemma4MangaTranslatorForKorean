@@ -1,14 +1,18 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { estimateBlockFontSizePx, clampBbox, normalizeBlockType } from "../shared/geometry";
-import type { BBox, BlockType, JobEvent, MangaPage, StartAnalysisRequest, TranslationBlock } from "../shared/types";
+import type { BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
+import type { ChapterRunPaths } from "./library";
 
 type PipelineOptions = {
   jobId: string;
+  pages: MangaPage[];
+  runPaths: ChapterRunPaths;
   emit: (event: JobEvent) => void;
-  onCleanupReady?: (cleanup: () => Promise<void>) => void;
-  pages: StartAnalysisRequest["pages"];
   signal: AbortSignal;
+  onCleanupReady?: (cleanup: () => Promise<void>) => void;
+  onPageComplete?: (page: MangaPage) => Promise<void>;
+  onPageFailed?: (page: MangaPage, errorMessage: string) => Promise<void>;
 };
 
 type TranslationOptions = {
@@ -58,13 +62,13 @@ type OverlayItem = {
 };
 
 const ROOT = resolve(__dirname, "../..");
-const simplePage = require("../../logs/runtime/simple-page-translate.cjs") as {
+const simplePage = require(join(ROOT, "src", "main", "runtime", "simple-page-translate.cjs")) as {
   requestTranslation: (server: ServerHandle, options: TranslationOptions) => Promise<TranslationResult>;
   saveArtifacts: (options: TranslationOptions, result: TranslationResult) => Promise<void>;
   startServer: (options: TranslationOptions) => Promise<ServerHandle>;
   stopServer: (server: ServerHandle | null | undefined) => Promise<void>;
 };
-const overlayTools = require("../../logs/runtime/overlay-parser.cjs") as {
+const overlayTools = require(join(ROOT, "src", "main", "runtime", "overlay-parser.cjs")) as {
   normalizeItems: (parsed: unknown) => OverlayItem[];
   parseJsonLenient: (rawText: string) => unknown;
 };
@@ -76,7 +80,10 @@ export async function runWholePagePipeline({
   jobId,
   emit,
   onCleanupReady,
+  onPageComplete,
+  onPageFailed,
   pages,
+  runPaths,
   signal
 }: PipelineOptions): Promise<{ pages: MangaPage[]; warnings: string[] }> {
   if (pages.length === 0) {
@@ -85,7 +92,7 @@ export async function runWholePagePipeline({
 
   throwIfAborted(signal);
 
-  const baseOptions = buildBaseOptions(jobId);
+  const baseOptions = buildBaseOptions(jobId, runPaths.runDir);
   const progressTotal = pages.length;
   emit({
     id: jobId,
@@ -127,7 +134,7 @@ export async function runWholePagePipeline({
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         throwIfAborted(signal);
 
-        const pageOptions = buildPageOptions(baseOptions, jobId, page, index, attempt);
+        const pageOptions = buildPageOptions(baseOptions, page, index, attempt);
         pageOptions.abortSignal = signal;
         emit({
           id: jobId,
@@ -169,9 +176,13 @@ export async function runWholePagePipeline({
 
           successPage = {
             ...page,
-            blocks: items.map((item, itemIndex) => overlayItemToBlock(item, page, itemIndex))
+            blocks: items.map((item, itemIndex) => overlayItemToBlock(item, page, itemIndex)),
+            analysisStatus: "completed",
+            lastError: undefined,
+            updatedAt: new Date().toISOString()
           };
           warnings.push(...buildPageWarnings(page.name, items));
+          await onPageComplete?.(successPage);
           emit({
             id: jobId,
             kind: "gemma-analysis",
@@ -219,10 +230,15 @@ export async function runWholePagePipeline({
       }
 
       warnings.push(`${page.name}: ${maxAttempts}회 재시도 후 실패하여 이 페이지는 건너뜁니다. 마지막 오류: ${lastErrorMessage}`);
-      nextPages.push({
+      const failedPage: MangaPage = {
         ...page,
-        blocks: []
-      });
+        blocks: [],
+        analysisStatus: "failed",
+        lastError: lastErrorMessage,
+        updatedAt: new Date().toISOString()
+      };
+      nextPages.push(failedPage);
+      await onPageFailed?.(failedPage, lastErrorMessage);
       emit({
         id: jobId,
         kind: "gemma-analysis",
@@ -255,10 +271,10 @@ export async function runWholePagePipeline({
   }
 }
 
-function buildBaseOptions(jobId: string): TranslationOptions {
+function buildBaseOptions(jobId: string, runDir: string): TranslationOptions {
   return {
     imagePath: "",
-    outputDir: join(ROOT, "logs", "app-jobs", jobId),
+    outputDir: runDir,
     port: readNumberEnv("MANGA_TRANSLATOR_LLAMA_PORT", 18180),
     promptMode: "ko_bbox_lines_multiview",
     temperature: readNumberEnv("MANGA_TRANSLATOR_TEMPERATURE", 0),
@@ -281,30 +297,17 @@ function buildBaseOptions(jobId: string): TranslationOptions {
   };
 }
 
-function buildPageOptions(
-  baseOptions: TranslationOptions,
-  jobId: string,
-  page: StartAnalysisRequest["pages"][number],
-  index: number,
-  attempt: number
-): TranslationOptions {
+function buildPageOptions(baseOptions: TranslationOptions, page: MangaPage, index: number, attempt: number): TranslationOptions {
   return {
     ...baseOptions,
     imagePath: page.imagePath,
     promptOverrideText: attempt > 1 ? buildRetryPrompt() : undefined,
-    outputDir: join(
-      ROOT,
-      "logs",
-      "app-jobs",
-      jobId,
-      `${String(index + 1).padStart(3, "0")}-${sanitizeFilePart(page.name)}`,
-      `attempt-${attempt}`
-    ),
+    outputDir: join(baseOptions.outputDir, "pages", page.id, `attempt-${attempt}`),
     label: `page-${index + 1}-attempt-${attempt}`
   };
 }
 
-function overlayItemToBlock(item: OverlayItem, page: StartAnalysisRequest["pages"][number], index: number): TranslationBlock {
+function overlayItemToBlock(item: OverlayItem, page: MangaPage, index: number): TranslationBlock {
   const type = mapOverlayType(item.type);
   const bbox = clampBbox(item.bbox);
   const translatedText = item.ko.trim();
@@ -360,10 +363,6 @@ function buildPageWarnings(pageName: string, items: OverlayItem[]): string[] {
 function readNumberEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
-}
-
-function sanitizeFilePart(value: string): string {
-  return value.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-").replace(/\s+/g, "_");
 }
 
 function summarizePreview(text: string, maxLength = 240): string {

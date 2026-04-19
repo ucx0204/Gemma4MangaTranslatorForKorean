@@ -31,7 +31,7 @@ export function OverlayBlock({
     width: layout.rect.width,
     height: layout.rect.height,
     padding: layout.paddingPx,
-    overflow: layout.overflow ? "visible" : "hidden",
+    overflow: "hidden",
     color: block.textColor,
     backgroundColor: hexToRgba(block.backgroundColor, block.opacity),
     fontSize: `${layout.fontSizePx}px`,
@@ -39,19 +39,21 @@ export function OverlayBlock({
     textAlign: block.textAlign
   };
   const textWrapStyle: React.CSSProperties = {
-    width: Math.min(layout.innerWidth, layout.fitInnerWidth),
+    width: layout.innerWidth,
     maxWidth: "100%",
-    height: Math.min(layout.innerHeight, layout.fitInnerHeight),
+    height: layout.innerHeight,
     maxHeight: "100%",
-    overflow: layout.overflow ? "visible" : "hidden"
+    overflow: "hidden"
   };
   const contentStyle: React.CSSProperties = {
-    writingMode: "horizontal-tb",
+    writingMode: block.renderDirection === "vertical" ? "vertical-rl" : "horizontal-tb",
+    textOrientation: block.renderDirection === "vertical" ? "upright" : undefined,
     transform: block.renderDirection === "rotated" ? "rotate(-8deg)" : undefined,
     transformOrigin: "center center",
     width: `${layout.fitInnerWidth}px`,
+    height: block.renderDirection === "vertical" ? `${layout.fitInnerHeight}px` : undefined,
     maxWidth: "100%",
-    maxHeight: layout.overflow ? "none" : "100%"
+    maxHeight: "100%"
   };
 
   return (

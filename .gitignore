@@ -12,9 +12,5 @@ tools/llama-b8808-cuda12/
 models/
 testProject1/
 logs/*
-!logs/runtime/
-logs/runtime/*
-!logs/runtime/*.cjs
-!logs/runtime/*.ps1
 logs/app.log
-logs/app-jobs/
+library/

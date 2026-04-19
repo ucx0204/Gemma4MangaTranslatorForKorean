@@ -4,9 +4,9 @@ const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
 
-const { ensureSupergemmaRuntime } = require("../../scripts/ensure-supergemma-runtime.cjs");
+const { ensureSupergemmaRuntime } = require("../../../scripts/ensure-supergemma-runtime.cjs");
 
-const ROOT = path.resolve(__dirname, "../..");
+const ROOT = path.resolve(__dirname, "../../..");
 const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 const DEFAULT_API_KEY = "local-llama-server";

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-const { normalizeItems, parseJsonLenient } = require("../logs/runtime/overlay-parser.cjs");
+const { normalizeItems, parseJsonLenient } = require("../src/main/runtime/overlay-parser.cjs");
 
 describe("overlay parser", () => {
   it("recovers malformed JSON output with broken quotes and bare ids", () => {
