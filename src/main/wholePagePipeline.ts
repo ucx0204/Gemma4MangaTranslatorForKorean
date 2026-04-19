@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildBaseTranslationOptions, type TranslationOptions } from "./appSettings";
+import { logError, logInfo, logWarn } from "./logger";
 import { estimateBlockFontSizePx, clampBbox, normalizeBlockType } from "../shared/geometry";
 import type { AppSettings, BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
 import { getAppPaths } from "./appPaths";
@@ -95,6 +96,14 @@ export async function runWholePagePipeline({
   const progressTotal = pages.length;
   const modelCached = runtime.simplePage.isModelCached(baseOptions);
 
+  logInfo("Analysis pipeline initialized", {
+    jobId,
+    pageCount: pages.length,
+    runPaths,
+    modelCached,
+    settings: summarizeTranslationOptions(baseOptions)
+  });
+
   emit({
     id: jobId,
     kind: "gemma-analysis",
@@ -133,11 +142,14 @@ export async function runWholePagePipeline({
       throwIfAborted(signal);
       let successPage: MangaPage | null = null;
       let lastErrorMessage = "";
+      let lastError: unknown;
+      let lastPageOptions: TranslationOptions | null = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         throwIfAborted(signal);
 
         const pageOptions = buildPageOptions(baseOptions, page, index, attempt);
+        lastPageOptions = pageOptions;
         pageOptions.abortSignal = signal;
         emit({
           id: jobId,
@@ -163,14 +175,26 @@ export async function runWholePagePipeline({
             parsed = runtime.overlayTools.parseJsonLenient(result.outputText);
           } catch (error) {
             const preview = summarizePreview(result.outputText);
-            throw new Error(
+            const parseError = new Error(
               `${page.name}: 모델 응답을 구조화 형식으로 해석하지 못했습니다. preview=${preview} cause=${error instanceof Error ? error.message : String(error)}`
-            );
+            ) as Error & { cause?: unknown };
+            parseError.cause = error;
+            Object.assign(parseError, {
+              outputPreview: preview,
+              outputDir: pageOptions.outputDir,
+              responseFormat: "structured-overlay"
+            });
+            throw parseError;
           }
 
           const items = runtime.overlayTools.normalizeItems(parsed);
           if (items.length === 0) {
-            throw new Error(`${page.name}: bbox 결과를 만들지 못했습니다.`);
+            const bboxError = new Error(`${page.name}: bbox 결과를 만들지 못했습니다.`);
+            Object.assign(bboxError, {
+              outputDir: pageOptions.outputDir,
+              outputPreview: summarizePreview(result.outputText)
+            });
+            throw bboxError;
           }
 
           const overlayItemsPath = join(pageOptions.outputDir, "overlay-items.json");
@@ -204,8 +228,22 @@ export async function runWholePagePipeline({
             throw error;
           }
 
+          lastError = error;
           lastErrorMessage = error instanceof Error ? error.message : String(error);
           warnings.push(`${page.name}: 시도 ${attempt}/${maxAttempts} 실패 - ${lastErrorMessage}`);
+          logWarn("Analysis attempt failed", {
+            failureCategory: classifyFailure(error),
+            jobId,
+            page: summarizePage(page),
+            pageIndex: index + 1,
+            pageTotal: pages.length,
+            attempt,
+            attemptTotal: maxAttempts,
+            willRetry: attempt < maxAttempts,
+            runPaths,
+            pageOptions: summarizeTranslationOptions(pageOptions),
+            error
+          });
 
           if (attempt < maxAttempts) {
             emit({
@@ -233,6 +271,18 @@ export async function runWholePagePipeline({
       }
 
       warnings.push(`${page.name}: ${maxAttempts}회 재시도 후 실패하여 이 페이지는 건너뜁니다. 마지막 오류: ${lastErrorMessage}`);
+      logError("Analysis page skipped after retries", {
+        failureCategory: classifyFailure(lastError),
+        jobId,
+        page: summarizePage(page),
+        pageIndex: index + 1,
+        pageTotal: pages.length,
+        attemptTotal: maxAttempts,
+        runPaths,
+        lastPageOptions: lastPageOptions ? summarizeTranslationOptions(lastPageOptions) : null,
+        lastErrorMessage,
+        error: lastError
+      });
       const failedPage: MangaPage = {
         ...page,
         blocks: [],
@@ -361,6 +411,79 @@ function readNumberEnv(name: string, fallback: number): number {
 function summarizePreview(text: string, maxLength = 240): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
+}
+
+function summarizeTranslationOptions(options: TranslationOptions): Record<string, unknown> {
+  return {
+    label: options.label,
+    imagePath: options.imagePath,
+    outputDir: options.outputDir,
+    port: options.port,
+    promptMode: options.promptMode,
+    promptOverrideText: options.promptOverrideText ? summarizePreview(options.promptOverrideText, 600) : undefined,
+    nsfwMode: options.nsfwMode,
+    temperature: options.temperature,
+    topP: options.topP,
+    topK: options.topK,
+    maxTokens: options.maxTokens,
+    ctx: options.ctx,
+    batch: options.batch,
+    ubatch: options.ubatch,
+    gpuLayers: options.gpuLayers,
+    fitTargetMb: options.fitTargetMb,
+    imageMinTokens: options.imageMinTokens,
+    imageMaxTokens: options.imageMaxTokens,
+    includeEnhancedVariant: options.includeEnhancedVariant,
+    enhancedMaxLongSide: options.enhancedMaxLongSide,
+    enhancedContrast: options.enhancedContrast,
+    imageFirst: options.imageFirst,
+    reuseServer: options.reuseServer,
+    workingDir: options.workingDir,
+    toolsDir: options.toolsDir,
+    serverPath: options.serverPath,
+    modelRepo: options.modelRepo,
+    modelFile: options.modelFile,
+    hfHomeDir: options.hfHomeDir ?? null,
+    hfHubCacheDir: options.hfHubCacheDir ?? null
+  };
+}
+
+function summarizePage(page: MangaPage): Record<string, unknown> {
+  return {
+    id: page.id,
+    name: page.name,
+    imagePath: page.imagePath,
+    width: page.width,
+    height: page.height,
+    analysisStatus: page.analysisStatus
+  };
+}
+
+function classifyFailure(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+
+  if (message.includes("build-page-variant")) {
+    return "image-preprocessing";
+  }
+  if (message.includes("llama-server") || message.includes("bundled llama-server") || message.includes("timed out while waiting")) {
+    return "server-startup";
+  }
+  if (message.includes("gemma request failed") || message.includes("request transport failed")) {
+    return "model-request";
+  }
+  if (message.includes("json parse failed")) {
+    return "response-json-parse";
+  }
+  if (message.includes("구조화 형식으로 해석하지 못했습니다") || message.includes("parseable structured payload")) {
+    return "overlay-parse";
+  }
+  if (message.includes("empty response")) {
+    return "empty-model-response";
+  }
+  if (message.includes("bbox 결과를 만들지 못했습니다")) {
+    return "empty-overlay-items";
+  }
+  return "unknown";
 }
 
 function buildRetryPrompt(): string {

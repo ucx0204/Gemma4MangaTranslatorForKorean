@@ -17,7 +17,8 @@ describe("app settings helpers", () => {
         modelRepo: "custom/repo",
         modelFile: "env-default.gguf",
         gpuLayers: 12
-      }
+      },
+      nsfwMode: false
     });
   });
 
@@ -31,7 +32,8 @@ describe("app settings helpers", () => {
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 9
-      }
+      },
+      nsfwMode: false
     });
 
     expect(parseStoredAppSettings("{\"gemma\":{\"gpuLayers\":\"abc\"}}", defaults)).toEqual({
@@ -39,7 +41,22 @@ describe("app settings helpers", () => {
         modelRepo: defaults.gemma.modelRepo,
         modelFile: defaults.gemma.modelFile,
         gpuLayers: 9
-      }
+      },
+      nsfwMode: false
+    });
+  });
+
+  it("normalizes nsfw mode from stored settings", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(parseStoredAppSettings("{\"nsfwMode\":true}", defaults)).toEqual({
+      gemma: defaults.gemma,
+      nsfwMode: true
+    });
+
+    expect(parseStoredAppSettings("{\"nsfwMode\":\"off\"}", defaults)).toEqual({
+      gemma: defaults.gemma,
+      nsfwMode: false
     });
   });
 
@@ -49,7 +66,8 @@ describe("app settings helpers", () => {
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
-      }
+      },
+      nsfwMode: true
     };
 
     const options = buildBaseTranslationOptions({
@@ -73,6 +91,7 @@ describe("app settings helpers", () => {
     expect(options.modelRepo).toBe("saved/repo");
     expect(options.modelFile).toBe("saved-model.gguf");
     expect(options.gpuLayers).toBe(24);
+    expect(options.nsfwMode).toBe(true);
     expect(options.temperature).toBe(0.2);
     expect(options.ctx).toBe(8192);
     expect(options.topP).toBe(0.85);

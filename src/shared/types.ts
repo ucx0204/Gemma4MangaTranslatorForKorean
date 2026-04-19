@@ -13,6 +13,7 @@ export type GemmaSettings = {
 
 export type AppSettings = {
   gemma: GemmaSettings;
+  nsfwMode: boolean;
 };
 
 export type JobStatus =

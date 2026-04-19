@@ -241,6 +241,7 @@ function registerIpc(): void {
     const id = randomUUID();
     const abortController = new AbortController();
     const pageIds = resolved.pages.map((page) => page.id);
+    let runPaths: Awaited<ReturnType<typeof getRunPaths>> | null = null;
     await markChapterPagesRunning(request.chapterId, pageIds);
     activeJob = { id, abortController };
 
@@ -264,7 +265,7 @@ function registerIpc(): void {
     };
 
     try {
-      const runPaths = await getRunPaths(request.chapterId, id);
+      runPaths = await getRunPaths(request.chapterId, id);
       const result = await runWholePagePipeline({
         jobId: id,
         emit,
@@ -326,7 +327,18 @@ function registerIpc(): void {
 
       const message = error instanceof Error ? error.message : String(error);
       await finalizeRunningPages(request.chapterId, pageIds, "failed", message);
-      logError("Analysis job failed", error);
+      logError("Analysis job failed", {
+        jobId: id,
+        request,
+        chapterId: request.chapterId,
+        runMode: request.runMode,
+        pageIds,
+        resolvedPageCount: resolved.pages.length,
+        resolvedPageNames: resolved.pages.map((page) => page.name),
+        runPaths,
+        lastEvent,
+        error
+      });
       emit({
         id,
         kind: "gemma-analysis",

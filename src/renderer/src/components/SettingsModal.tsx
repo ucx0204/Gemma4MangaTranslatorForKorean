@@ -21,12 +21,14 @@ export function SettingsModal({
   const [modelRepo, setModelRepo] = React.useState(initialSettings.gemma.modelRepo);
   const [modelFile, setModelFile] = React.useState(initialSettings.gemma.modelFile);
   const [gpuLayers, setGpuLayers] = React.useState(String(initialSettings.gemma.gpuLayers));
+  const [nsfwMode, setNsfwMode] = React.useState(initialSettings.nsfwMode);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
 
   React.useEffect(() => {
     setModelRepo(initialSettings.gemma.modelRepo);
     setModelFile(initialSettings.gemma.modelFile);
     setGpuLayers(String(initialSettings.gemma.gpuLayers));
+    setNsfwMode(initialSettings.nsfwMode);
   }, [initialSettings]);
 
   React.useEffect(() => {
@@ -50,7 +52,8 @@ export function SettingsModal({
         modelRepo: trimmedModelRepo,
         modelFile: trimmedModelFile,
         gpuLayers: parsedGpuLayers
-      }
+      },
+      nsfwMode
     });
   };
 
@@ -66,6 +69,21 @@ export function SettingsModal({
 
         <section className="modal-section">
           <p className="muted-line modal-note">다음 번 번역 실행부터 적용됩니다.</p>
+          <label className="settings-toggle-row">
+            NSFW 모드
+            <button
+              type="button"
+              className={`settings-toggle-button ${nsfwMode ? "active" : ""}`}
+              onClick={() => setNsfwMode((current) => !current)}
+              disabled={busy}
+              aria-pressed={nsfwMode}
+            >
+              {nsfwMode ? "켜짐" : "꺼짐"}
+            </button>
+          </label>
+          <p className="muted-line">
+            켜두면 시스템 프롬프트에 NSFW 허용 지시문을 추가합니다.
+          </p>
           <label>
             HF repo
             <input

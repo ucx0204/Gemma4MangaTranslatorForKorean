@@ -552,6 +552,24 @@ textarea {
   margin: 0;
 }
 
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-toggle-button {
+  min-width: 84px;
+  text-align: center;
+}
+
+.settings-toggle-button.active {
+  background: #6f3d26;
+  border-color: #cf8a63;
+  color: #fff4ea;
+}
+
 .radio-row,
 .checkbox-row {
   display: flex;

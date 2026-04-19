@@ -10,6 +10,7 @@ export type TranslationOptions = {
   port: number;
   promptMode: string;
   promptOverrideText?: string;
+  nsfwMode: boolean;
   temperature: number;
   topP: number;
   topK: number;
@@ -51,18 +52,21 @@ export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env):
       modelRepo: resolveNonEmptyString(env.MANGA_TRANSLATOR_MODEL_HF, DEFAULT_GEMMA_MODEL_REPO),
       modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, DEFAULT_GEMMA_MODEL_FILE),
       gpuLayers: resolveNonNegativeInteger(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
-    }
+    },
+    nsfwMode: false
   };
 }
 
 export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppSettings()): AppSettings {
-  const gemma = asRecord(raw)?.gemma;
+  const record = asRecord(raw);
+  const gemma = record?.gemma;
   return {
     gemma: {
       modelRepo: resolveNonEmptyString(asRecord(gemma)?.modelRepo, defaults.gemma.modelRepo),
       modelFile: resolveNonEmptyString(asRecord(gemma)?.modelFile, defaults.gemma.modelFile),
       gpuLayers: resolveNonNegativeInteger(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
-    }
+    },
+    nsfwMode: resolveBoolean(record?.nsfwMode, defaults.nsfwMode)
   };
 }
 
@@ -96,6 +100,7 @@ export function buildBaseTranslationOptions({
     outputDir: runDir,
     port: readNumberEnv(env, "MANGA_TRANSLATOR_LLAMA_PORT", 18180),
     promptMode: "ko_bbox_lines_multiview",
+    nsfwMode: settings.nsfwMode,
     temperature: readNumberEnv(env, "MANGA_TRANSLATOR_TEMPERATURE", 0),
     topP: readNumberEnv(env, "MANGA_TRANSLATOR_TOP_P", 0.85),
     topK: readNumberEnv(env, "MANGA_TRANSLATOR_TOP_K", 40),
@@ -135,6 +140,30 @@ function resolveNonEmptyString(value: unknown, fallback: string): string {
 function resolveNonNegativeInteger(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function resolveBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  if (typeof value === "number") {
+    if (value === 1) {
+      return true;
+    }
+    if (value === 0) {
+      return false;
+    }
+  }
+  return fallback;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
