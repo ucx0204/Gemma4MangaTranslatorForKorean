@@ -14,6 +14,7 @@ import { ImageStage } from "./components/ImageStage";
 import { ImportModal, type ImportModalSubmit } from "./components/ImportModal";
 import { LibraryTree } from "./components/LibraryTree";
 import { PageList } from "./components/PageList";
+import { RenameModal } from "./components/RenameModal";
 import { useStageSize } from "./hooks/useStageSize";
 import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
@@ -36,6 +37,18 @@ type DragState = {
   startBbox: BBox;
 };
 
+type RenameTarget =
+  | {
+      kind: "work";
+      id: string;
+      title: string;
+    }
+  | {
+      kind: "chapter";
+      id: string;
+      title: string;
+    };
+
 export default function App(): React.JSX.Element {
   const [library, setLibrary] = useState<LibraryIndex>({ workOrder: [], works: [] });
   const [currentChapter, setCurrentChapter] = useState<ChapterSnapshot | null>(null);
@@ -45,6 +58,8 @@ export default function App(): React.JSX.Element {
   const [statusLines, setStatusLines] = useState<string[]>([]);
   const [importPreview, setImportPreview] = useState<ImportPreviewResult | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -522,34 +537,47 @@ export default function App(): React.JSX.Element {
     dragRef.current = null;
   };
 
-  const renameWork = useCallback(async (workId: string) => {
+  const renameWork = useCallback((workId: string) => {
     const work = library.works.find((candidate) => candidate.id === workId);
     if (!work) {
       return;
     }
-    const title = window.prompt("작품 이름", work.title);
-    if (title === null) {
-      return;
-    }
-    setLibrary(await window.mangaApi.renameWork(workId, title));
+    setRenameTarget({ kind: "work", id: workId, title: work.title });
   }, [library.works]);
 
-  const renameChapter = useCallback(async (chapterId: string) => {
+  const renameChapter = useCallback((chapterId: string) => {
     const chapter =
       library.works.flatMap((work) => work.chapters).find((candidate) => candidate.id === chapterId) ??
       (currentChapter ? { id: currentChapter.id, title: currentChapter.title } : null);
     if (!chapter) {
       return;
     }
-    const title = window.prompt("화 이름", chapter.title);
-    if (title === null) {
+    setRenameTarget({ kind: "chapter", id: chapterId, title: chapter.title });
+  }, [currentChapter, library.works]);
+
+  const submitRename = useCallback(async (title: string) => {
+    if (!renameTarget) {
       return;
     }
-    setLibrary(await window.mangaApi.renameChapter(chapterId, title));
-    if (currentChapter?.id === chapterId) {
-      applyChapter(await window.mangaApi.openChapter(chapterId));
+
+    setRenameBusy(true);
+    try {
+      if (renameTarget.kind === "work") {
+        setLibrary(await window.mangaApi.renameWork(renameTarget.id, title));
+      } else {
+        if (currentChapter?.id === renameTarget.id && dirty) {
+          await saveNow();
+        }
+        setLibrary(await window.mangaApi.renameChapter(renameTarget.id, title));
+        if (currentChapter?.id === renameTarget.id) {
+          applyChapter(await window.mangaApi.openChapter(renameTarget.id));
+        }
+      }
+      setRenameTarget(null);
+    } finally {
+      setRenameBusy(false);
     }
-  }, [applyChapter, currentChapter, library.works]);
+  }, [applyChapter, currentChapter, dirty, renameTarget, saveNow]);
 
   return (
     <main className="app-shell">
@@ -695,6 +723,20 @@ export default function App(): React.JSX.Element {
 
       {importPreview ? (
         <ImportModal library={library} preview={importPreview} busy={importBusy} onCancel={() => setImportPreview(null)} onSubmit={(payload) => void submitImport(payload)} />
+      ) : null}
+
+      {renameTarget ? (
+        <RenameModal
+          kind={renameTarget.kind}
+          initialTitle={renameTarget.title}
+          busy={renameBusy}
+          onCancel={() => {
+            if (!renameBusy) {
+              setRenameTarget(null);
+            }
+          }}
+          onSubmit={(title) => void submitRename(title)}
+        />
       ) : null}
     </main>
   );

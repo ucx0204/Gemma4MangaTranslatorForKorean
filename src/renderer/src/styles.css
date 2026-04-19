@@ -523,6 +523,10 @@ textarea {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
+.rename-modal {
+  width: min(460px, 100%);
+}
+
 .modal-header {
   display: flex;
   align-items: center;
