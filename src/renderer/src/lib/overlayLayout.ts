@@ -3,9 +3,10 @@ import { bboxToPixels, clamp, resolveBlockRenderBbox } from "../../../shared/geo
 
 const MIN_FONT_SIZE_PX = 2;
 const MAX_AUTOFIT_FONT_SIZE_PX = 256;
-const MIN_BLOCK_PADDING_PX = 5;
+const MIN_BLOCK_PADDING_PX = 0;
 const MAX_BLOCK_PADDING_PX = 14;
 const MIN_INNER_SIZE_PX = 1;
+const BLOCK_BORDER_PX = 1;
 const TEXT_FIT_SAFETY_PX = 6;
 const TEXT_MEASURE_GUARD_PX = TEXT_FIT_SAFETY_PX + 4;
 
@@ -39,7 +40,18 @@ export function resolveOverlayFontSizePx(block: TranslationBlock, text: string, 
 }
 
 export function resolveBlockPaddingPx(rect: PixelRect): number {
-  return Math.round(clamp(Math.min(rect.width, rect.height) * 0.1, MIN_BLOCK_PADDING_PX, MAX_BLOCK_PADDING_PX));
+  const shortestSide = Math.min(rect.width, rect.height);
+  if (shortestSide <= 48) {
+    return 0;
+  }
+  if (shortestSide <= 72) {
+    return 1;
+  }
+  if (shortestSide <= 96) {
+    return 2;
+  }
+
+  return Math.round(clamp(shortestSide * 0.06, 3, MAX_BLOCK_PADDING_PX));
 }
 
 export function resolveBlockTextLayout(
@@ -50,8 +62,9 @@ export function resolveBlockTextLayout(
 ): BlockTextLayout {
   const rect = resolveBlockRectPx(block, pageSize, stageSize);
   const paddingPx = resolveBlockPaddingPx(rect);
-  const innerWidth = Math.max(MIN_INNER_SIZE_PX, rect.width - paddingPx * 2);
-  const innerHeight = Math.max(MIN_INNER_SIZE_PX, rect.height - paddingPx * 2);
+  const borderInsetPx = BLOCK_BORDER_PX * 2;
+  const innerWidth = Math.max(MIN_INNER_SIZE_PX, rect.width - paddingPx * 2 - borderInsetPx);
+  const innerHeight = Math.max(MIN_INNER_SIZE_PX, rect.height - paddingPx * 2 - borderInsetPx);
   const fitInnerWidth = Math.max(MIN_INNER_SIZE_PX, innerWidth - TEXT_MEASURE_GUARD_PX * 2);
   const fitInnerHeight = Math.max(MIN_INNER_SIZE_PX, innerHeight - TEXT_MEASURE_GUARD_PX * 2);
   const scale = Math.min(stageSize.width / Math.max(1, pageSize.width), stageSize.height / Math.max(1, pageSize.height));

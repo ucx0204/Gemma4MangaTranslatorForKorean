@@ -30,6 +30,7 @@ export function OverlayBlock({
     top: layout.rect.top,
     width: layout.rect.width,
     height: layout.rect.height,
+    boxSizing: "border-box",
     padding: layout.paddingPx,
     overflow: "hidden",
     color: block.textColor,
@@ -39,6 +40,7 @@ export function OverlayBlock({
     textAlign: block.textAlign
   };
   const textWrapStyle: React.CSSProperties = {
+    boxSizing: "border-box",
     width: layout.innerWidth,
     maxWidth: "100%",
     height: layout.innerHeight,
@@ -46,6 +48,7 @@ export function OverlayBlock({
     overflow: "hidden"
   };
   const contentStyle: React.CSSProperties = {
+    boxSizing: "border-box",
     writingMode: block.renderDirection === "vertical" ? "vertical-rl" : "horizontal-tb",
     textOrientation: block.renderDirection === "vertical" ? "upright" : undefined,
     transform: block.renderDirection === "rotated" ? "rotate(-8deg)" : undefined,
