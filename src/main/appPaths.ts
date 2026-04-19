@@ -8,6 +8,7 @@ export type AppPaths = {
   executableDir: string;
   resourcesDir: string;
   dataRoot: string;
+  settingsPath: string;
   libraryDir: string;
   logsDir: string;
   logFile: string;
@@ -46,6 +47,7 @@ export function getAppPaths(): AppPaths {
     executableDir,
     resourcesDir,
     dataRoot,
+    settingsPath: join(dataRoot, "settings.json"),
     libraryDir,
     logsDir,
     logFile: join(logsDir, "app.log"),

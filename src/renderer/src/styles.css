@@ -527,6 +527,10 @@ textarea {
   width: min(460px, 100%);
 }
 
+.settings-modal {
+  width: min(560px, 100%);
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -542,6 +546,10 @@ textarea {
 .modal-section {
   display: grid;
   gap: 10px;
+}
+
+.modal-note {
+  margin: 0;
 }
 
 .radio-row,
@@ -576,7 +584,12 @@ textarea {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.settings-actions {
+  justify-content: space-between;
 }
 
 @media (max-width: 1400px) {

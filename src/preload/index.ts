@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  AppSettings,
   ChapterSnapshot,
   CreateImportRequest,
   CreateImportResult,
@@ -25,6 +26,9 @@ const api = {
   reorderChapters: (workId: string, chapterIds: string[]): Promise<LibraryIndex> => ipcRenderer.invoke("library:reorder-chapters", workId, chapterIds),
   reorderPages: (chapterId: string, pageIds: string[]): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:reorder-pages", chapterId, pageIds),
   deletePage: (chapterId: string, pageId: string): Promise<ChapterSnapshot> => ipcRenderer.invoke("library:delete-page", chapterId, pageId),
+  getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
+  saveSettings: (settings: AppSettings): Promise<AppSettings> => ipcRenderer.invoke("settings:save", settings),
+  resetSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:reset"),
   confirm: (title: string, message: string, detail?: string): Promise<boolean> => ipcRenderer.invoke("dialogs:confirm", title, message, detail),
   getLogPath: (): Promise<string> => ipcRenderer.invoke("logs:get-path"),
   openLogFolder: () => ipcRenderer.invoke("logs:open-folder"),

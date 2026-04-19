@@ -74,7 +74,7 @@ function isModelCached(options = {}) {
     return false;
   }
 
-  const cachedModel = findNamedFile(repoCacheDir(requireConfiguredModelRepo(), hubCacheDir), requireConfiguredModelFile());
+  const cachedModel = findNamedFile(repoCacheDir(resolveConfiguredModelRepo(options), hubCacheDir), resolveConfiguredModelFile(options));
   return Boolean(cachedModel);
 }
 
@@ -228,18 +228,18 @@ function buildMessages(options, imageVariants) {
   ];
 }
 
-function requireConfiguredModelRepo() {
-  return String(process.env.MANGA_TRANSLATOR_MODEL_HF ?? "").trim() || DEFAULT_MODEL_HF;
+function resolveConfiguredModelRepo(options = {}) {
+  return String(options.modelRepo ?? process.env.MANGA_TRANSLATOR_MODEL_HF ?? "").trim() || DEFAULT_MODEL_HF;
 }
 
-function requireConfiguredModelFile() {
-  return String(process.env.LLAMA_ARG_HF_FILE ?? "").trim() || DEFAULT_HF_FILE;
+function resolveConfiguredModelFile(options = {}) {
+  return String(options.modelFile ?? process.env.LLAMA_ARG_HF_FILE ?? "").trim() || DEFAULT_HF_FILE;
 }
 
 function buildLaunchArgs(options) {
   const args = [
     "-hf",
-    requireConfiguredModelRepo(),
+    resolveConfiguredModelRepo(options),
     "--host",
     "127.0.0.1",
     "--port",
@@ -280,7 +280,7 @@ function buildLaunchArgs(options) {
     "--chat-template-kwargs",
     "{\"enable_thinking\":false}",
     "-hff",
-    requireConfiguredModelFile()
+    resolveConfiguredModelFile(options)
   ];
 
   if (typeof options.imageMinTokens === "number" && Number.isFinite(options.imageMinTokens)) {
@@ -401,7 +401,7 @@ async function stopServer(server) {
 async function requestTranslation(server, options) {
   const messages = buildMessages(options, await prepareImageVariants(options));
   const requestBody = {
-    model: process.env.MANGA_TRANSLATOR_MODEL || requireConfiguredModelRepo(),
+    model: resolveConfiguredModelRepo(options),
     temperature: options.temperature,
     top_p: options.topP,
     top_k: options.topK,
@@ -463,6 +463,8 @@ async function saveArtifacts(options, result) {
       batch: options.batch,
       ubatch: options.ubatch,
       gpuLayers: options.gpuLayers,
+      modelRepo: resolveConfiguredModelRepo(options),
+      modelFile: resolveConfiguredModelFile(options),
       fitTargetMb: options.fitTargetMb,
       imageMinTokens: options.imageMinTokens,
       imageMaxTokens: options.imageMaxTokens,

@@ -25,8 +25,9 @@ import {
   updatePageAfterAnalysis
 } from "./library";
 import { getLogPath, logError, logInfo, resetAppLog, writeLog } from "./logger";
+import { getAppSettings, resetAppSettings, saveAppSettings } from "./settingsStore";
 import { runWholePagePipeline } from "./wholePagePipeline";
-import type { CreateImportRequest, ImportPreviewResult, JobEvent, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+import type { AppSettings, CreateImportRequest, ImportPreviewResult, JobEvent, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
 const appPaths = ensureWritableAppDirectories();
 resetAppLog();
@@ -37,6 +38,7 @@ logInfo("Application process starting", {
   processExecPath: process.execPath,
   logPath: getLogPath(),
   libraryPath: getLibraryRoot(),
+  settingsPath: appPaths.settingsPath,
   dataRoot: appPaths.dataRoot,
   runtimeDir: appPaths.runtimeDir,
   llamaServerPath: appPaths.llamaServerPath,
@@ -133,6 +135,10 @@ function registerIpc(): void {
     writeLog(level, `renderer: ${message}`, detail);
     return { logged: true };
   });
+
+  ipcMain.handle("settings:get", async () => getAppSettings());
+  ipcMain.handle("settings:save", async (_event, settings: AppSettings) => saveAppSettings(settings));
+  ipcMain.handle("settings:reset", async () => resetAppSettings());
 
   ipcMain.handle("dialogs:confirm", async (_event, title: string, message: string, detail?: string) => {
     const options = {

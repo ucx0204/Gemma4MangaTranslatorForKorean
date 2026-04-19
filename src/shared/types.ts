@@ -5,6 +5,16 @@ export type RenderTextDirection = "horizontal" | "vertical" | "rotated" | "hidde
 
 export type JobKind = "gemma-analysis";
 
+export type GemmaSettings = {
+  modelRepo: string;
+  modelFile: string;
+  gpuLayers: number;
+};
+
+export type AppSettings = {
+  gemma: GemmaSettings;
+};
+
 export type JobStatus =
   | "idle"
   | "starting"

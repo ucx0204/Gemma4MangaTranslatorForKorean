@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type {
+  AppSettings,
   BBox,
   ChapterSnapshot,
   ImportPreviewResult,
@@ -15,6 +16,7 @@ import { ImportModal, type ImportModalSubmit } from "./components/ImportModal";
 import { LibraryTree } from "./components/LibraryTree";
 import { PageList } from "./components/PageList";
 import { RenameModal } from "./components/RenameModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { useStageSize } from "./hooks/useStageSize";
 import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
@@ -60,6 +62,9 @@ export default function App(): React.JSX.Element {
   const [importBusy, setImportBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -89,9 +94,21 @@ export default function App(): React.JSX.Element {
     setLibrary(next);
   }, []);
 
+  const refreshSettings = useCallback(async () => {
+    const next = await window.mangaApi.getSettings();
+    setSettings(next);
+    return next;
+  }, []);
+
   React.useEffect(() => {
     void refreshLibrary();
   }, [refreshLibrary]);
+
+  React.useEffect(() => {
+    void refreshSettings().catch((error) => {
+      console.error(error);
+    });
+  }, [refreshSettings]);
 
   React.useEffect(() => {
     currentChapterRef.current = currentChapter;
@@ -579,6 +596,53 @@ export default function App(): React.JSX.Element {
     }
   }, [applyChapter, currentChapter, dirty, renameTarget, saveNow]);
 
+  const openSettings = useCallback(async () => {
+    if (settings) {
+      setSettingsOpen(true);
+      return;
+    }
+
+    setSettingsBusy(true);
+    try {
+      await refreshSettings();
+      setSettingsOpen(true);
+    } catch (error) {
+      console.error(error);
+      pushStatus("설정을 불러오지 못했습니다.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [pushStatus, refreshSettings, settings]);
+
+  const submitSettings = useCallback(async (nextSettings: AppSettings) => {
+    setSettingsBusy(true);
+    try {
+      const saved = await window.mangaApi.saveSettings(nextSettings);
+      setSettings(saved);
+      setSettingsOpen(false);
+      pushStatus("설정을 저장했습니다. 다음 번 번역 실행부터 적용됩니다.");
+    } catch (error) {
+      console.error(error);
+      pushStatus("설정을 저장하지 못했습니다.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [pushStatus]);
+
+  const resetSettings = useCallback(async () => {
+    setSettingsBusy(true);
+    try {
+      const reset = await window.mangaApi.resetSettings();
+      setSettings(reset);
+      pushStatus("Gemma 설정을 기본값으로 복원했습니다. 다음 번 번역 실행부터 적용됩니다.");
+    } catch (error) {
+      console.error(error);
+      pushStatus("기본 설정을 복원하지 못했습니다.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [pushStatus]);
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -595,7 +659,9 @@ export default function App(): React.JSX.Element {
           <button onClick={() => void openImportPreview("zip-folder")} disabled={jobActive}>
             작품 일괄 번역
           </button>
-          <button onClick={() => void window.mangaApi.openLogFolder()}>로그 폴더</button>
+          <button onClick={() => void openSettings()} disabled={settingsBusy && !settingsOpen}>
+            설정
+          </button>
           <button onClick={() => void window.mangaApi.openLibraryFolder()}>보관함 폴더</button>
         </section>
 
@@ -736,6 +802,23 @@ export default function App(): React.JSX.Element {
             }
           }}
           onSubmit={(title) => void submitRename(title)}
+        />
+      ) : null}
+
+      {settingsOpen && settings ? (
+        <SettingsModal
+          initialSettings={settings}
+          busy={settingsBusy}
+          onCancel={() => {
+            if (!settingsBusy) {
+              setSettingsOpen(false);
+            }
+          }}
+          onOpenLogFolder={() => {
+            void window.mangaApi.openLogFolder();
+          }}
+          onReset={() => void resetSettings()}
+          onSubmit={(nextSettings) => void submitSettings(nextSettings)}
         />
       ) : null}
     </main>

@@ -18,3 +18,4 @@ testProject1/
 logs/*
 logs/app.log
 library/
+settings.json

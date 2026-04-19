@@ -1,9 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { buildBaseTranslationOptions, type TranslationOptions } from "./appSettings";
 import { estimateBlockFontSizePx, clampBbox, normalizeBlockType } from "../shared/geometry";
-import type { BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
+import type { AppSettings, BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
 import { getAppPaths } from "./appPaths";
 import type { ChapterRunPaths } from "./library";
+import { getAppSettings } from "./settingsStore";
 
 type PipelineOptions = {
   jobId: string;
@@ -14,37 +16,6 @@ type PipelineOptions = {
   onCleanupReady?: (cleanup: () => Promise<void>) => void;
   onPageComplete?: (page: MangaPage) => Promise<void>;
   onPageFailed?: (page: MangaPage, errorMessage: string) => Promise<void>;
-};
-
-type TranslationOptions = {
-  imagePath: string;
-  outputDir: string;
-  port: number;
-  promptMode: string;
-  promptOverrideText?: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  maxTokens: number;
-  ctx: number;
-  batch: number;
-  ubatch: number;
-  gpuLayers: number;
-  fitTargetMb: number;
-  imageMinTokens: number;
-  imageMaxTokens: number;
-  includeEnhancedVariant: boolean;
-  enhancedMaxLongSide: number;
-  enhancedContrast: number;
-  imageFirst: boolean;
-  reuseServer: boolean;
-  workingDir: string;
-  toolsDir: string;
-  serverPath: string;
-  hfHomeDir?: string;
-  hfHubCacheDir?: string;
-  label: string;
-  abortSignal?: AbortSignal;
 };
 
 type ServerHandle = {
@@ -117,8 +88,10 @@ export async function runWholePagePipeline({
 
   throwIfAborted(signal);
 
+  const paths = getAppPaths();
+  const appSettings = await getAppSettings(paths);
   const runtime = loadRuntimeModules();
-  const baseOptions = buildBaseOptions(jobId, runPaths.runDir);
+  const baseOptions = buildBaseOptions(jobId, runPaths.runDir, appSettings, paths);
   const progressTotal = pages.length;
   const modelCached = runtime.simplePage.isModelCached(baseOptions);
 
@@ -132,7 +105,7 @@ export async function runWholePagePipeline({
     progressTotal,
     pageTotal: pages.length,
     detail: modelCached
-      ? `gpu layers ${baseOptions.gpuLayers}, image tokens ${baseOptions.imageMinTokens}`
+      ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
       : "로컬 모델이 없어 첫 실행 다운로드가 필요합니다."
   });
 
@@ -301,36 +274,20 @@ export async function runWholePagePipeline({
   }
 }
 
-function buildBaseOptions(jobId: string, runDir: string): TranslationOptions {
-  const paths = getAppPaths();
-  return {
-    imagePath: "",
-    outputDir: runDir,
-    port: readNumberEnv("MANGA_TRANSLATOR_LLAMA_PORT", 18180),
-    promptMode: "ko_bbox_lines_multiview",
-    temperature: readNumberEnv("MANGA_TRANSLATOR_TEMPERATURE", 0),
-    topP: readNumberEnv("MANGA_TRANSLATOR_TOP_P", 0.85),
-    topK: readNumberEnv("MANGA_TRANSLATOR_TOP_K", 40),
-    maxTokens: readNumberEnv("MANGA_TRANSLATOR_MAX_TOKENS", 1400),
-    ctx: readNumberEnv("MANGA_TRANSLATOR_CTX", 16384),
-    batch: readNumberEnv("MANGA_TRANSLATOR_BATCH", 32),
-    ubatch: readNumberEnv("MANGA_TRANSLATOR_UBATCH", 32),
-    gpuLayers: readNumberEnv("MANGA_TRANSLATOR_GPU_LAYERS", 16),
-    fitTargetMb: readNumberEnv("MANGA_TRANSLATOR_FIT_TARGET_MB", 4096),
-    imageMinTokens: readNumberEnv("MANGA_TRANSLATOR_IMAGE_MIN_TOKENS", 1120),
-    imageMaxTokens: readNumberEnv("MANGA_TRANSLATOR_IMAGE_MAX_TOKENS", 1120),
-    includeEnhancedVariant: true,
-    enhancedMaxLongSide: 1900,
-    enhancedContrast: 1.35,
-    imageFirst: true,
-    reuseServer: true,
-    workingDir: paths.dataRoot,
-    toolsDir: paths.toolsDir,
-    serverPath: paths.llamaServerPath,
-    hfHomeDir: paths.hfHomeDir,
-    hfHubCacheDir: paths.hfHubCacheDir,
-    label: `app-${jobId}`
-  };
+export function buildBaseOptions(
+  jobId: string,
+  runDir: string,
+  settings: AppSettings,
+  paths = getAppPaths(),
+  env: NodeJS.ProcessEnv = process.env
+): TranslationOptions {
+  return buildBaseTranslationOptions({
+    jobId,
+    runDir,
+    paths,
+    settings,
+    env
+  });
 }
 
 function buildPageOptions(baseOptions: TranslationOptions, page: MangaPage, index: number, attempt: number): TranslationOptions {
