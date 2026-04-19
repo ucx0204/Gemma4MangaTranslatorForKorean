@@ -16,6 +16,7 @@ export type JobStatus =
 
 export type JobPhase =
   | "booting"
+  | "model_downloading"
   | "ready"
   | "page_running"
   | "page_retry"

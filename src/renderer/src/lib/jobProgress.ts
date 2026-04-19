@@ -9,6 +9,8 @@ export function formatJobLabel(job: JobWithProgress): string {
   switch (job.phase) {
     case "booting":
       return "모델 준비 중";
+    case "model_downloading":
+      return "모델 다운로드/서버 준비 중";
     case "ready":
       return "모델 준비 완료";
     case "page_running":

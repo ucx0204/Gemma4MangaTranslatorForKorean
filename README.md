@@ -51,6 +51,12 @@ npm run dev
 npm run build
 ```
 
+Windows 설치형 배포:
+
+```powershell
+npm run dist:win
+```
+
 ## 기본 동작
 
 - 이미지를 열면 보관함에 `작품 > 화` 구조로 저장됩니다.
@@ -59,11 +65,12 @@ npm run build
 - `이어서 번역`은 아직 완료되지 않은 페이지들만 다시 돌리고, `전체 다시 번역`은 현재 화 전체를 다시 생성합니다.
 - 각 페이지 옆의 `재번역` 버튼으로 한 페이지씩 다시 돌릴 수 있고, `삭제` 버튼은 확인 후 보관함에서 제거합니다.
 - 생성된 블록은 바로 드래그/리사이즈/수정할 수 있고, 편집 모드에서는 텍스트 방향에 `vertical`도 선택할 수 있습니다.
-- 번역 결과와 원본 이미지는 `library/` 아래에 저장되며, 실행 로그는 `logs/app.log`만 사용합니다.
+- 개발 실행에서는 번역 결과와 원본 이미지가 `library/` 아래에 저장되며, 실행 로그는 `logs/app.log`를 사용합니다.
+- 설치형 배포본에서는 로그/보관함/모델 캐시가 실행 파일 옆 `data/` 아래(`data/logs`, `data/library`, `data/hf-cache`)에 저장됩니다.
 
 ## 기본 모델 설정
 
-앱 기본값은 아래 조합입니다. `llama-server`는 `tools/llama-b8833-cuda12.4`가 있으면 그 경로를 우선 사용하고, 없으면 다른 로컬 런타임 후보로 내려갑니다.
+앱 기본값은 아래 조합입니다. 현재 번들 대상 `llama-server`는 `tools/llama-b8833-cuda12.4`입니다.
 
 ```powershell
 $env:MANGA_TRANSLATOR_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF"

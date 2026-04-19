@@ -1,5 +1,6 @@
 node_modules/
 out/
+dist/
 .tmp/
 *.log
 .venv-glmocr/

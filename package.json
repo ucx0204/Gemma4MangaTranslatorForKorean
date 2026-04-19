@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "description": "Thin desktop manga translation overlay editor powered by whole-page Gemma 4 OCR and bbox overlays.",
   "type": "commonjs",
-  "main": "out/main/index.js",
+  "main": "out/main/bootstrap.js",
   "scripts": {
     "dev": "node scripts/dev.cjs",
     "build": "node scripts/build.cjs",
+    "dist:win": "npm run build && electron-builder --config electron-builder.config.cjs --win nsis --x64",
     "compile:electron": "tsc -p tsconfig.electron.json",
     "logs": "node scripts/tail-log.cjs",
     "typecheck": "tsc --noEmit",
@@ -24,6 +25,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "electron": "^39.2.7",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.0",
     "vitest": "^4.0.16"

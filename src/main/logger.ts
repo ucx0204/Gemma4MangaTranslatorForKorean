@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { getAppPaths } from "./appPaths";
 
-const DEFAULT_LOG_PATH = join(process.cwd(), "logs", "app.log");
 const UTF8_BOM = "\ufeff";
 let ensuredLogPath: string | null = null;
 
@@ -9,7 +9,7 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export function getLogPath(): string {
   const configured = process.env.MANGA_TRANSLATOR_LOG_PATH?.trim();
-  return configured || DEFAULT_LOG_PATH;
+  return configured || getAppPaths().logFile;
 }
 
 export function logDebug(message: string, detail?: unknown): void {

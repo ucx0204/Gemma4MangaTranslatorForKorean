@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { extname, join } from "node:path";
+import { ensureWritableAppDirectories } from "./appPaths";
 import {
   cleanupLegacyLogs,
   createImport,
@@ -27,12 +28,19 @@ import { getLogPath, logError, logInfo, resetAppLog, writeLog } from "./logger";
 import { runWholePagePipeline } from "./wholePagePipeline";
 import type { CreateImportRequest, ImportPreviewResult, JobEvent, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
 
+const appPaths = ensureWritableAppDirectories();
 resetAppLog();
 
 logInfo("Application process starting", {
   cwd: process.cwd(),
+  isPackaged: app.isPackaged,
+  processExecPath: process.execPath,
   logPath: getLogPath(),
   libraryPath: getLibraryRoot(),
+  dataRoot: appPaths.dataRoot,
+  runtimeDir: appPaths.runtimeDir,
+  llamaServerPath: appPaths.llamaServerPath,
+  hfHomeDir: appPaths.hfHomeDir ?? null,
   electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null
 });
 

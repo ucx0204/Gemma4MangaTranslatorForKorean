@@ -1,19 +1,81 @@
 const { spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
+const { existsSync, readdirSync } = require("node:fs");
 const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
 
-const { ensureSupergemmaRuntime } = require("../../../scripts/ensure-supergemma-runtime.cjs");
-const { resolveBundledServerPath } = require("../../../scripts/resolve-llama-runtime.cjs");
+const { resolveBundledServerPath } = require("./resolve-llama-runtime.cjs");
 
-const ROOT = path.resolve(__dirname, "../../..");
 const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 const DEFAULT_API_KEY = "local-llama-server";
 
-function defaultServerPath() {
-  return resolveBundledServerPath(ROOT);
+function resolveToolsDir(options = {}) {
+  const candidates = [
+    options.toolsDir,
+    process.env.MANGA_TRANSLATOR_TOOLS_DIR,
+    path.resolve(__dirname, "..", "tools"),
+    path.resolve(__dirname, "..", "..", "tools")
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
+}
+
+function defaultServerPath(options = {}) {
+  return resolveBundledServerPath(resolveToolsDir(options));
+}
+
+function resolveWorkingDir(options = {}) {
+  return options.workingDir || process.cwd();
+}
+
+function resolveHfHomeDir(options = {}) {
+  return options.hfHomeDir || process.env.HF_HOME || process.env.MANGA_TRANSLATOR_HF_HOME || null;
+}
+
+function resolveHubCacheDir(options = {}) {
+  return options.hfHubCacheDir || process.env.HF_HUB_CACHE || process.env.HUGGINGFACE_HUB_CACHE || null;
+}
+
+function repoCacheDir(repoId, hubCacheDir) {
+  return path.join(hubCacheDir, `models--${repoId.replace(/\//g, "--")}`);
+}
+
+function findNamedFile(rootDir, expectedName, maxDepth = 6) {
+  if (!rootDir || !existsSync(rootDir)) {
+    return null;
+  }
+
+  const queue = [{ dir: rootDir, depth: 0 }];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+
+    const entries = readdirSync(current.dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current.dir, entry.name);
+      if (entry.isFile() && entry.name === expectedName) {
+        return fullPath;
+      }
+      if (entry.isDirectory() && current.depth < maxDepth) {
+        queue.push({ dir: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return null;
+}
+
+function isModelCached(options = {}) {
+  const hubCacheDir = resolveHubCacheDir(options);
+  if (!hubCacheDir) {
+    return false;
+  }
+
+  const cachedModel = findNamedFile(repoCacheDir(requireConfiguredModelRepo(), hubCacheDir), requireConfiguredModelFile());
+  return Boolean(cachedModel);
 }
 
 const PROMPT_KO_BBOX_LINES_MULTIVIEW = [
@@ -98,7 +160,7 @@ async function buildEnhancedVariant(options) {
 
   await new Promise((resolve, reject) => {
     const child = spawn("powershell", args, {
-      cwd: ROOT,
+      cwd: resolveWorkingDir(options),
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       env: process.env
@@ -242,9 +304,12 @@ async function isReachable(baseUrl) {
   }
 }
 
-async function waitForReady(baseUrl, timeoutMs = 240000) {
+async function waitForReadyOrExit(baseUrl, child, timeoutMs = 1800000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`llama-server exited before becoming ready (code=${child.exitCode ?? "null"}, signal=${child.signalCode ?? "null"})`);
+    }
     if (await isReachable(baseUrl)) {
       return;
     }
@@ -253,34 +318,64 @@ async function waitForReady(baseUrl, timeoutMs = 240000) {
   throw new Error(`Timed out while waiting for llama-server at ${baseUrl}`);
 }
 
+function shrinkBuffer(current, chunk, maxLength = 12000) {
+  const next = `${current}${String(chunk)}`;
+  return next.length <= maxLength ? next : next.slice(next.length - maxLength);
+}
+
 async function startServer(options) {
   const baseUrl = `http://127.0.0.1:${options.port}/v1`;
   if (options.reuseServer && await isReachable(baseUrl)) {
     return { baseUrl, child: null, startedByScript: false };
   }
 
-  let serverPath = process.env.LLAMA_SERVER_PATH || defaultServerPath();
+  const serverPath = options.serverPath || process.env.LLAMA_SERVER_PATH || defaultServerPath(options);
   if (!existsSync(serverPath)) {
-    const runtime = ensureSupergemmaRuntime({ root: ROOT, serverPath: defaultServerPath() });
-    serverPath = runtime.serverPath;
+    throw new Error(`Bundled llama-server binary is missing: ${serverPath}`);
   }
 
+  const childEnv = {
+    ...process.env,
+    MANGA_TRANSLATOR_LLAMA_PORT: String(options.port)
+  };
+  const hfHomeDir = resolveHfHomeDir(options);
+  const hfHubCacheDir = resolveHubCacheDir(options);
+  if (hfHomeDir) {
+    childEnv.HF_HOME = hfHomeDir;
+  }
+  if (hfHubCacheDir) {
+    childEnv.HF_HUB_CACHE = hfHubCacheDir;
+    childEnv.HUGGINGFACE_HUB_CACHE = hfHubCacheDir;
+  }
+
+  let recentStdout = "";
+  let recentStderr = "";
   const child = spawn(serverPath, buildLaunchArgs(options), {
-    cwd: ROOT,
+    cwd: resolveWorkingDir(options),
     stdio: ["ignore", "pipe", "pipe"],
     shell: false,
-    env: {
-      ...process.env,
-      MANGA_TRANSLATOR_LLAMA_PORT: String(options.port)
-    }
+    env: childEnv
   });
 
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk) => process.stdout.write(`[llama:${options.label}:stdout] ${chunk}`));
-  child.stderr?.on("data", (chunk) => process.stderr.write(`[llama:${options.label}:stderr] ${chunk}`));
+  child.stdout?.on("data", (chunk) => {
+    recentStdout = shrinkBuffer(recentStdout, chunk);
+    process.stdout.write(`[llama:${options.label}:stdout] ${chunk}`);
+  });
+  child.stderr?.on("data", (chunk) => {
+    recentStderr = shrinkBuffer(recentStderr, chunk);
+    process.stderr.write(`[llama:${options.label}:stderr] ${chunk}`);
+  });
 
-  await waitForReady(baseUrl);
+  try {
+    await waitForReadyOrExit(baseUrl, child);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = recentStderr.trim() || recentStdout.trim();
+    throw new Error(detail ? `${message}\n${detail.slice(-4000)}` : message);
+  }
+
   return { baseUrl, child, startedByScript: true };
 }
 
@@ -373,7 +468,9 @@ async function saveArtifacts(options, result) {
       imageMaxTokens: options.imageMaxTokens,
       includeEnhancedVariant: options.includeEnhancedVariant,
       enhancedMaxLongSide: options.enhancedMaxLongSide,
-      enhancedContrast: options.enhancedContrast
+      enhancedContrast: options.enhancedContrast,
+      hfHomeDir: resolveHfHomeDir(options),
+      hfHubCacheDir: resolveHubCacheDir(options)
     },
     prompt: options.promptOverrideText || PROMPT_KO_BBOX_LINES_MULTIVIEW,
     outputText: result.outputText,
@@ -386,6 +483,7 @@ async function saveArtifacts(options, result) {
 
 module.exports = {
   buildMessages,
+  isModelCached,
   prepareImageVariants,
   requestTranslation,
   saveArtifacts,

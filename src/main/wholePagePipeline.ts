@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { estimateBlockFontSizePx, clampBbox, normalizeBlockType } from "../shared/geometry";
 import type { BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
+import { getAppPaths } from "./appPaths";
 import type { ChapterRunPaths } from "./library";
 
 type PipelineOptions = {
@@ -37,6 +38,11 @@ type TranslationOptions = {
   enhancedContrast: number;
   imageFirst: boolean;
   reuseServer: boolean;
+  workingDir: string;
+  toolsDir: string;
+  serverPath: string;
+  hfHomeDir?: string;
+  hfHubCacheDir?: string;
   label: string;
   abortSignal?: AbortSignal;
 };
@@ -61,17 +67,36 @@ type OverlayItem = {
   ko: string;
 };
 
-const ROOT = resolve(__dirname, "../..");
-const simplePage = require(join(ROOT, "src", "main", "runtime", "simple-page-translate.cjs")) as {
-  requestTranslation: (server: ServerHandle, options: TranslationOptions) => Promise<TranslationResult>;
-  saveArtifacts: (options: TranslationOptions, result: TranslationResult) => Promise<void>;
-  startServer: (options: TranslationOptions) => Promise<ServerHandle>;
-  stopServer: (server: ServerHandle | null | undefined) => Promise<void>;
+type RuntimeModules = {
+  simplePage: {
+    requestTranslation: (server: ServerHandle, options: TranslationOptions) => Promise<TranslationResult>;
+    saveArtifacts: (options: TranslationOptions, result: TranslationResult) => Promise<void>;
+    startServer: (options: TranslationOptions) => Promise<ServerHandle>;
+    stopServer: (server: ServerHandle | null | undefined) => Promise<void>;
+    isModelCached: (options: TranslationOptions) => boolean;
+  };
+  overlayTools: {
+    normalizeItems: (parsed: unknown) => OverlayItem[];
+    parseJsonLenient: (rawText: string) => unknown;
+  };
 };
-const overlayTools = require(join(ROOT, "src", "main", "runtime", "overlay-parser.cjs")) as {
-  normalizeItems: (parsed: unknown) => OverlayItem[];
-  parseJsonLenient: (rawText: string) => unknown;
-};
+
+let cachedRuntimeDir: string | null = null;
+let cachedRuntime: RuntimeModules | null = null;
+
+function loadRuntimeModules(): RuntimeModules {
+  const runtimeDir = getAppPaths().runtimeDir;
+  if (cachedRuntime && cachedRuntimeDir === runtimeDir) {
+    return cachedRuntime;
+  }
+
+  cachedRuntimeDir = runtimeDir;
+  cachedRuntime = {
+    simplePage: require(join(runtimeDir, "simple-page-translate.cjs")) as RuntimeModules["simplePage"],
+    overlayTools: require(join(runtimeDir, "overlay-parser.cjs")) as RuntimeModules["overlayTools"]
+  };
+  return cachedRuntime;
+}
 
 const DEFAULT_TEXT_COLOR = "#111111";
 const DEFAULT_BACKGROUND_COLOR = "#fffdf5";
@@ -92,22 +117,27 @@ export async function runWholePagePipeline({
 
   throwIfAborted(signal);
 
+  const runtime = loadRuntimeModules();
   const baseOptions = buildBaseOptions(jobId, runPaths.runDir);
   const progressTotal = pages.length;
+  const modelCached = runtime.simplePage.isModelCached(baseOptions);
+
   emit({
     id: jobId,
     kind: "gemma-analysis",
     status: "starting",
-    progressText: "Gemma 4 서버 시작 중",
-    phase: "booting",
+    progressText: modelCached ? "Gemma 4 서버 시작 중" : "모델 다운로드/서버 준비 중",
+    phase: modelCached ? "booting" : "model_downloading",
     progressCurrent: 0,
     progressTotal,
     pageTotal: pages.length,
-    detail: `gpu layers ${baseOptions.gpuLayers}, image tokens ${baseOptions.imageMinTokens}`
+    detail: modelCached
+      ? `gpu layers ${baseOptions.gpuLayers}, image tokens ${baseOptions.imageMinTokens}`
+      : "로컬 모델이 없어 첫 실행 다운로드가 필요합니다."
   });
 
-  const server = await simplePage.startServer(baseOptions);
-  onCleanupReady?.(() => simplePage.stopServer(server));
+  const server = await runtime.simplePage.startServer(baseOptions);
+  onCleanupReady?.(() => runtime.simplePage.stopServer(server));
   const warnings: string[] = [];
   const maxAttempts = Math.max(1, readNumberEnv("MANGA_TRANSLATOR_PAGE_RETRIES", 5));
 
@@ -152,12 +182,12 @@ export async function runWholePagePipeline({
         });
 
         try {
-          const result = await simplePage.requestTranslation(server, pageOptions);
-          await simplePage.saveArtifacts(pageOptions, result);
+          const result = await runtime.simplePage.requestTranslation(server, pageOptions);
+          await runtime.simplePage.saveArtifacts(pageOptions, result);
 
           let parsed: unknown;
           try {
-            parsed = overlayTools.parseJsonLenient(result.outputText);
+            parsed = runtime.overlayTools.parseJsonLenient(result.outputText);
           } catch (error) {
             const preview = summarizePreview(result.outputText);
             throw new Error(
@@ -165,7 +195,7 @@ export async function runWholePagePipeline({
             );
           }
 
-          const items = overlayTools.normalizeItems(parsed);
+          const items = runtime.overlayTools.normalizeItems(parsed);
           if (items.length === 0) {
             throw new Error(`${page.name}: bbox 결과를 만들지 못했습니다.`);
           }
@@ -267,11 +297,12 @@ export async function runWholePagePipeline({
 
     return { pages: nextPages, warnings };
   } finally {
-    await simplePage.stopServer(server);
+    await runtime.simplePage.stopServer(server);
   }
 }
 
 function buildBaseOptions(jobId: string, runDir: string): TranslationOptions {
+  const paths = getAppPaths();
   return {
     imagePath: "",
     outputDir: runDir,
@@ -293,6 +324,11 @@ function buildBaseOptions(jobId: string, runDir: string): TranslationOptions {
     enhancedContrast: 1.35,
     imageFirst: true,
     reuseServer: true,
+    workingDir: paths.dataRoot,
+    toolsDir: paths.toolsDir,
+    serverPath: paths.llamaServerPath,
+    hfHomeDir: paths.hfHomeDir,
+    hfHubCacheDir: paths.hfHubCacheDir,
     label: `app-${jobId}`
   };
 }

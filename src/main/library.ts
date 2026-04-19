@@ -28,6 +28,7 @@ import type {
   LibraryWorkSummary,
   MangaPage
 } from "../shared/types";
+import { getAppPaths } from "./appPaths";
 
 type ZipEntryLike = {
   entryName: string;
@@ -39,8 +40,7 @@ type AdmZipLike = {
   getEntries: () => ZipEntryLike[];
 };
 
-const ROOT = resolve(__dirname, "../..");
-const LIBRARY_ROOT = join(ROOT, "library");
+const LIBRARY_ROOT = getAppPaths().libraryDir;
 const INDEX_PATH = join(LIBRARY_ROOT, "index.json");
 const WORKS_ROOT = join(LIBRARY_ROOT, "works");
 const DEFAULT_WORK_TITLE = "미정 작품";
@@ -820,11 +820,12 @@ async function removePageArtifacts(workId: string, chapterId: string, pageId: st
 }
 
 export async function cleanupLegacyLogs(): Promise<void> {
+  const logsRoot = resolve(getAppPaths().logsDir);
   const targets = [
-    join(ROOT, "logs", "app-jobs"),
-    join(ROOT, "logs", "bench"),
-    join(ROOT, "logs", "debug"),
-    join(ROOT, "logs", "runtime")
+    join(logsRoot, "app-jobs"),
+    join(logsRoot, "bench"),
+    join(logsRoot, "debug"),
+    join(logsRoot, "runtime")
   ];
 
   for (const target of targets) {
@@ -832,7 +833,6 @@ export async function cleanupLegacyLogs(): Promise<void> {
       continue;
     }
     const resolved = resolve(target);
-    const logsRoot = resolve(join(ROOT, "logs"));
     if (!resolved.startsWith(logsRoot)) {
       continue;
     }
