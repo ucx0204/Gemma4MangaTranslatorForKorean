@@ -33,7 +33,7 @@ Gemma 4가 페이지 전체를 직접 보고:
 npm install
 ```
 
-기본값은 이미 `Unsloth Gemma 4 Q6`입니다. 필요하면 아래 스크립트로 같은 값을 현재 셸에 명시적으로 주입할 수 있습니다:
+기본값은 이미 `Unsloth Gemma 4 Q6`입니다. 현재는 `tools/` 아래의 CUDA 런타임을 우선 사용하도록 맞춰져 있고, 필요하면 아래 스크립트로 같은 값을 현재 셸에 명시적으로 주입할 수 있습니다:
 
 ```powershell
 . .\scripts\use-unsloth-gemma4-q6.ps1
@@ -63,7 +63,7 @@ npm run build
 
 ## 기본 모델 설정
 
-앱 기본값은 아래 조합입니다.
+앱 기본값은 아래 조합입니다. `llama-server`는 `tools/llama-b8833-cuda12.4`가 있으면 그 경로를 우선 사용하고, 없으면 다른 로컬 런타임 후보로 내려갑니다.
 
 ```powershell
 $env:MANGA_TRANSLATOR_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF"

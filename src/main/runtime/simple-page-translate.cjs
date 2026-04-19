@@ -5,12 +5,16 @@ const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
 
 const { ensureSupergemmaRuntime } = require("../../../scripts/ensure-supergemma-runtime.cjs");
+const { resolveBundledServerPath } = require("../../../scripts/resolve-llama-runtime.cjs");
 
 const ROOT = path.resolve(__dirname, "../../..");
 const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 const DEFAULT_API_KEY = "local-llama-server";
-const DEFAULT_SERVER_PATH = path.join(ROOT, "tools", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
+
+function defaultServerPath() {
+  return resolveBundledServerPath(ROOT);
+}
 
 const PROMPT_KO_BBOX_LINES_MULTIVIEW = [
   "You are given the same Japanese manga page in multiple full-page renderings.",
@@ -255,9 +259,9 @@ async function startServer(options) {
     return { baseUrl, child: null, startedByScript: false };
   }
 
-  let serverPath = process.env.LLAMA_SERVER_PATH || DEFAULT_SERVER_PATH;
+  let serverPath = process.env.LLAMA_SERVER_PATH || defaultServerPath();
   if (!existsSync(serverPath)) {
-    const runtime = ensureSupergemmaRuntime({ root: ROOT });
+    const runtime = ensureSupergemmaRuntime({ root: ROOT, serverPath: defaultServerPath() });
     serverPath = runtime.serverPath;
   }
 

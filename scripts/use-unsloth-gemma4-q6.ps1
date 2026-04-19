@@ -2,7 +2,18 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 
-$env:LLAMA_SERVER_PATH = Join-Path $root "tools\\llama-b8808-cuda12\\llama-server.exe"
+$serverCandidates = @(
+  (Join-Path $root "tools\\llama-b8833-cuda12.4\\llama-server.exe"),
+  (Join-Path $root "tools\\llama-b8833-cuda13.1\\llama-server.exe"),
+  (Join-Path $root "tools\\llama-b8808-cuda12\\llama-server.exe")
+)
+
+$resolvedServerPath = $serverCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $resolvedServerPath) {
+  $resolvedServerPath = $serverCandidates[0]
+}
+
+$env:LLAMA_SERVER_PATH = $resolvedServerPath
 $env:MANGA_TRANSLATOR_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF"
 $env:LLAMA_ARG_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf"
 $env:MANGA_TRANSLATOR_MODEL = $env:MANGA_TRANSLATOR_MODEL_HF

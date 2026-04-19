@@ -1,6 +1,7 @@
 const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveBundledServerPath } = require("./resolve-llama-runtime.cjs");
 
 const MODEL_REPO = "Jiunsong/supergemma4-26b-abliterated-multimodal-gguf-8bit";
 const REQUIRED_FILES = [
@@ -11,7 +12,7 @@ const REQUIRED_FILES = [
 ];
 
 function defaultServerPath(root) {
-  return join(root, "tools", "llama-b8808-cuda12", process.platform === "win32" ? "llama-server.exe" : "llama-server");
+  return resolveBundledServerPath(root);
 }
 
 function resolveServerPath(options = {}) {

@@ -1,5 +1,6 @@
 node_modules/
 out/
+.tmp/
 *.log
 .venv-glmocr/
 .env
@@ -9,6 +10,8 @@ tmp-tiles/
 tmp-*.png
 tmp/
 tools/llama-b8808-cuda12/
+tools/llama-b8833-cuda12.4/
+tools/llama-b8833-cuda13.1/
 models/
 testProject1/
 logs/*
