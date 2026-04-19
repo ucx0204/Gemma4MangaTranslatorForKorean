@@ -33,8 +33,14 @@ export function LibraryTree({
             <div key={work.id} className="work-group">
               <div className="work-row">
                 <strong>{work.title}</strong>
-                <button className="ghost-button" onClick={() => onRenameWork(work.id)} disabled={jobActive}>
-                  이름 변경
+                <button
+                  className="ghost-button library-icon-button"
+                  onClick={() => onRenameWork(work.id)}
+                  disabled={jobActive}
+                  aria-label={`${work.title} 이름 변경`}
+                  title="이름 변경"
+                >
+                  ✎
                 </button>
               </div>
               <div className="chapter-list">
@@ -65,8 +71,14 @@ export function LibraryTree({
                         {chapter.pageCount}페이지 · {resolveChapterStatusLabel(chapter.status)}
                       </small>
                     </button>
-                    <button className="ghost-button" onClick={() => onRenameChapter(chapter.id)} disabled={jobActive}>
-                      이름 변경
+                    <button
+                      className="ghost-button library-icon-button"
+                      onClick={() => onRenameChapter(chapter.id)}
+                      disabled={jobActive}
+                      aria-label={`${chapter.title} 이름 변경`}
+                      title="이름 변경"
+                    >
+                      ✎
                     </button>
                   </div>
                 ))}

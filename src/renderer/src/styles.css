@@ -275,6 +275,17 @@ textarea {
   line-height: 1;
 }
 
+.library-icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .page-side {
   display: flex;
   align-items: center;

@@ -15,6 +15,7 @@ import { ImportModal, type ImportModalSubmit } from "./components/ImportModal";
 import { LibraryTree } from "./components/LibraryTree";
 import { PageList } from "./components/PageList";
 import { useStageSize } from "./hooks/useStageSize";
+import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
 import "./styles.css";
 
@@ -50,6 +51,9 @@ export default function App(): React.JSX.Element {
   const dragRef = useRef<DragState | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyVersionRef = useRef(0);
+  const currentChapterRef = useRef<ChapterSnapshot | null>(null);
+  const selectedPageIdRef = useRef<string | null>(null);
+  const selectedBlockIdRef = useRef<string | null>(null);
 
   const selectedPage = useMemo(
     () => currentChapter?.pages.find((page) => page.id === selectedPageId) ?? currentChapter?.pages[0] ?? null,
@@ -75,6 +79,45 @@ export default function App(): React.JSX.Element {
   }, [refreshLibrary]);
 
   React.useEffect(() => {
+    currentChapterRef.current = currentChapter;
+  }, [currentChapter]);
+
+  React.useEffect(() => {
+    selectedPageIdRef.current = selectedPageId;
+  }, [selectedPageId]);
+
+  React.useEffect(() => {
+    selectedBlockIdRef.current = selectedBlockId;
+  }, [selectedBlockId]);
+
+  const mergeLiveChapter = useCallback((chapter: ChapterSnapshot) => {
+    setCurrentChapter((current) => {
+      if (current && current.id !== chapter.id) {
+        return current;
+      }
+      return chapter;
+    });
+
+    const selection = resolveSelectionAfterChapterSync(chapter, selectedPageIdRef.current, selectedBlockIdRef.current);
+    setSelectedPageId(selection.selectedPageId);
+    setSelectedBlockId(selection.selectedBlockId);
+    setDirty(false);
+  }, []);
+
+  const appendStatusLine = useCallback((line: string) => {
+    const next = line.trim();
+    if (!next) {
+      return;
+    }
+    setStatusLines((lines) => {
+      if (lines[0] === next) {
+        return lines;
+      }
+      return [next, ...lines].slice(0, 16);
+    });
+  }, []);
+
+  React.useEffect(() => {
     const unsubscribe = window.mangaApi.onJobEvent((event) => {
       const friendlyText = formatJobLabel(event);
       setJobState((current) => ({
@@ -91,9 +134,28 @@ export default function App(): React.JSX.Element {
         attemptTotal: event.attemptTotal ?? current.attemptTotal
       }));
       appendStatusLine(formatJobEventLine(event));
+
+      if (event.phase === "page_done" || event.phase === "page_skipped") {
+        const chapterId = currentChapterRef.current?.id;
+        if (!chapterId) {
+          return;
+        }
+
+        void window.mangaApi
+          .openChapter(chapterId)
+          .then((chapter) => {
+            if (currentChapterRef.current?.id === chapter.id) {
+              mergeLiveChapter(chapter);
+            }
+          })
+          .then(() => refreshLibrary())
+          .catch((error) => {
+            console.error(error);
+          });
+      }
     });
     return unsubscribe;
-  }, []);
+  }, [appendStatusLine, mergeLiveChapter, refreshLibrary]);
 
   React.useEffect(() => {
     if (!dirty || !currentChapter) {
@@ -120,19 +182,6 @@ export default function App(): React.JSX.Element {
       }
     };
   }, [currentChapter, dirty]);
-
-  const appendStatusLine = useCallback((line: string) => {
-    const next = line.trim();
-    if (!next) {
-      return;
-    }
-    setStatusLines((lines) => {
-      if (lines[0] === next) {
-        return lines;
-      }
-      return [next, ...lines].slice(0, 16);
-    });
-  }, []);
 
   const pushStatus = useCallback(
     (line: string) => {
@@ -216,6 +265,7 @@ export default function App(): React.JSX.Element {
         progressText: "모델 준비 중",
         phase: "booting"
       });
+      setCurrentChapter((chapter) => (chapter ? markChapterPagesRunning(chapter, runMode, pageId) : chapter));
 
       const result = await window.mangaApi.startAnalysis({ chapterId: currentChapter.id, runMode, pageId });
       if (result.chapter) {

@@ -139,7 +139,8 @@ function doesTextFit(block: TranslationBlock, text: string, fontSize: number, in
 
   const context = getMeasureContext();
   context.font = buildFont(fontSize);
-  return measureWrappedText(context, text, innerWidth, fontSize * block.lineHeight).totalHeight <= innerHeight;
+  const measured = measureWrappedText(context, text, innerWidth, fontSize * block.lineHeight);
+  return measured.totalHeight <= innerHeight && measured.maxLineWidth <= innerWidth;
 }
 
 function wrapTextToWidth(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -178,11 +179,12 @@ function measureWrappedText(
   text: string,
   maxWidth: number,
   lineHeight: number
-): { lines: string[]; totalHeight: number } {
+) : { lines: string[]; totalHeight: number; maxLineWidth: number } {
   const lines = wrapTextToWidth(context, text, maxWidth);
   return {
     lines,
-    totalHeight: lines.length * lineHeight
+    totalHeight: lines.length * lineHeight,
+    maxLineWidth: lines.reduce((widest, line) => Math.max(widest, context.measureText(line).width), 0)
   };
 }
 
