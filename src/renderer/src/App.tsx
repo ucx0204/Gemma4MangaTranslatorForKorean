@@ -18,7 +18,7 @@ import { PageList } from "./components/PageList";
 import { RenameModal } from "./components/RenameModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { useStageSize } from "./hooks/useStageSize";
-import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
+import { markChapterPagesRunning, mergeLiveChapterPreservingDirtyCompletedPages, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
 import { resolveAdjacentPageId, resolveKeyboardPageNavigation } from "./lib/pageNavigation";
 import "./styles.css";
@@ -73,6 +73,7 @@ export default function App(): React.JSX.Element {
   const dragRef = useRef<DragState | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyVersionRef = useRef(0);
+  const dirtyPageIdsRef = useRef<Set<string>>(new Set());
   const currentChapterRef = useRef<ChapterSnapshot | null>(null);
   const selectedPageIdRef = useRef<string | null>(null);
   const selectedBlockIdRef = useRef<string | null>(null);
@@ -83,6 +84,7 @@ export default function App(): React.JSX.Element {
   );
   const selectedBlock = selectedPage?.blocks.find((block) => block.id === selectedBlockId) ?? null;
   const jobActive = ["starting", "running", "cancelling"].includes(jobState.status);
+  const selectedPageEditLocked = Boolean(jobActive && selectedPage && selectedPage.analysisStatus !== "completed");
   const selectedPageSize = useMemo(
     () => (selectedPage ? { width: selectedPage.width, height: selectedPage.height } : null),
     [selectedPage?.height, selectedPage?.width]
@@ -125,17 +127,26 @@ export default function App(): React.JSX.Element {
   }, [selectedBlockId]);
 
   const mergeLiveChapter = useCallback((chapter: ChapterSnapshot) => {
-    setCurrentChapter((current) => {
-      if (current && current.id !== chapter.id) {
-        return current;
+    const current = currentChapterRef.current;
+    if (current && current.id !== chapter.id) {
+      return;
+    }
+
+    const mergeResult = mergeLiveChapterPreservingDirtyCompletedPages(chapter, current, dirtyPageIdsRef.current);
+    dirtyPageIdsRef.current = new Set(mergeResult.preservedDirtyPageIds);
+    currentChapterRef.current = mergeResult.chapter;
+
+    setCurrentChapter((currentChapter) => {
+      if (currentChapter && currentChapter.id !== mergeResult.chapter.id) {
+        return currentChapter;
       }
-      return chapter;
+      return mergeResult.chapter;
     });
 
-    const selection = resolveSelectionAfterChapterSync(chapter, selectedPageIdRef.current, selectedBlockIdRef.current);
+    const selection = resolveSelectionAfterChapterSync(mergeResult.chapter, selectedPageIdRef.current, selectedBlockIdRef.current);
     setSelectedPageId(selection.selectedPageId);
     setSelectedBlockId(selection.selectedBlockId);
-    setDirty(false);
+    setDirty(mergeResult.preservedDirtyPageIds.length > 0);
   }, []);
 
   const appendStatusLine = useCallback((line: string) => {
@@ -192,7 +203,7 @@ export default function App(): React.JSX.Element {
   }, [appendStatusLine, mergeLiveChapter, refreshLibrary]);
 
   React.useEffect(() => {
-    if (!dirty || !currentChapter) {
+    if (!dirty || !currentChapter || jobActive) {
       return;
     }
 
@@ -201,6 +212,7 @@ export default function App(): React.JSX.Element {
       try {
         await window.mangaApi.saveChapter(currentChapter);
         if (dirtyVersionRef.current === version) {
+          dirtyPageIdsRef.current.clear();
           setDirty(false);
         }
       } catch (error) {
@@ -215,7 +227,7 @@ export default function App(): React.JSX.Element {
         window.clearTimeout(saveTimerRef.current);
       }
     };
-  }, [currentChapter, dirty]);
+  }, [currentChapter, dirty, jobActive]);
 
   const pushStatus = useCallback(
     (line: string) => {
@@ -225,8 +237,11 @@ export default function App(): React.JSX.Element {
     [appendStatusLine]
   );
 
-  const markDirty = useCallback(() => {
+  const markDirty = useCallback((pageId?: string) => {
     dirtyVersionRef.current += 1;
+    if (pageId) {
+      dirtyPageIdsRef.current = new Set([...dirtyPageIdsRef.current, pageId]);
+    }
     setDirty(true);
   }, []);
 
@@ -239,6 +254,7 @@ export default function App(): React.JSX.Element {
       saveTimerRef.current = null;
     }
     await window.mangaApi.saveChapter(currentChapter);
+    dirtyPageIdsRef.current.clear();
     setDirty(false);
   }, [currentChapter]);
 
@@ -248,8 +264,10 @@ export default function App(): React.JSX.Element {
       saveTimerRef.current = null;
     }
     setCurrentChapter(null);
+    currentChapterRef.current = null;
     setSelectedPageId(null);
     setSelectedBlockId(null);
+    dirtyPageIdsRef.current.clear();
     setDirty(false);
   }, []);
 
@@ -259,6 +277,8 @@ export default function App(): React.JSX.Element {
         await saveNow();
       }
       const chapter = await window.mangaApi.openChapter(chapterId);
+      dirtyPageIdsRef.current.clear();
+      currentChapterRef.current = chapter;
       setCurrentChapter(chapter);
       setSelectedPageId(chapter.pages[0]?.id ?? null);
       setSelectedBlockId(null);
@@ -271,6 +291,8 @@ export default function App(): React.JSX.Element {
     if (!chapter) {
       return;
     }
+    dirtyPageIdsRef.current.clear();
+    currentChapterRef.current = chapter;
     setCurrentChapter(chapter);
     setSelectedPageId((current) => (chapter.pages.some((page) => page.id === current) ? current : chapter.pages[0]?.id ?? null));
     setSelectedBlockId(null);
@@ -380,13 +402,14 @@ export default function App(): React.JSX.Element {
     [applyChapter, importPreview, openChapter, refreshLibrary]
   );
 
-  const updateCurrentChapter = useCallback((updater: (chapter: ChapterSnapshot) => ChapterSnapshot) => {
+  const updateCurrentChapter = useCallback((pageId: string, updater: (chapter: ChapterSnapshot) => ChapterSnapshot) => {
     setCurrentChapter((current) => {
       if (!current) {
         return current;
       }
       const next = updater(current);
-      markDirty();
+      currentChapterRef.current = next;
+      markDirty(pageId);
       return next;
     });
   }, [markDirty]);
@@ -441,11 +464,11 @@ export default function App(): React.JSX.Element {
   );
 
   const updateSelectedBlock = (patch: Partial<TranslationBlock>) => {
-    if (!selectedPage || !selectedBlock) {
+    if (!selectedPage || !selectedBlock || selectedPageEditLocked) {
       return;
     }
 
-    updateCurrentChapter((current) => ({
+    updateCurrentChapter(selectedPage.id, (current) => ({
       ...current,
       pages: current.pages.map((page) =>
         page.id !== selectedPage.id
@@ -474,10 +497,10 @@ export default function App(): React.JSX.Element {
   };
 
   const deleteSelectedBlock = () => {
-    if (!selectedPage || !selectedBlock) {
+    if (!selectedPage || !selectedBlock || selectedPageEditLocked) {
       return;
     }
-    updateCurrentChapter((current) => ({
+    updateCurrentChapter(selectedPage.id, (current) => ({
       ...current,
       pages: current.pages.map((page) =>
         page.id === selectedPage.id
@@ -493,14 +516,14 @@ export default function App(): React.JSX.Element {
   };
 
   const duplicateSelectedBlock = () => {
-    if (!selectedPage || !selectedBlock) {
+    if (!selectedPage || !selectedBlock || selectedPageEditLocked) {
       return;
     }
     const copy = {
       ...offsetBlockBboxes(selectedBlock, 16, 16),
       id: `${selectedBlock.id}-copy-${Date.now()}`
     };
-    updateCurrentChapter((current) => ({
+    updateCurrentChapter(selectedPage.id, (current) => ({
       ...current,
       pages: current.pages.map((page) =>
         page.id === selectedPage.id
@@ -516,7 +539,7 @@ export default function App(): React.JSX.Element {
   };
 
   const onBlockPointerDown = (event: React.PointerEvent, block: TranslationBlock, mode: DragMode) => {
-    if (!stageRef.current || jobActive) {
+    if (!stageRef.current || selectedPageEditLocked) {
       return;
     }
     event.preventDefault();
@@ -537,7 +560,7 @@ export default function App(): React.JSX.Element {
     const drag = dragRef.current;
     const page = selectedPage;
     const stage = stageRef.current;
-    if (!drag || !page || !stage || !currentChapter) {
+    if (!drag || !page || !stage || !currentChapter || selectedPageEditLocked) {
       return;
     }
     const rect = stage.getBoundingClientRect();
@@ -556,7 +579,7 @@ export default function App(): React.JSX.Element {
             h: drag.startBbox.h + dy
           };
 
-    updateCurrentChapter((chapter) => ({
+    updateCurrentChapter(page.id, (chapter) => ({
       ...chapter,
       pages: chapter.pages.map((candidate) =>
         candidate.id !== page.id
@@ -888,7 +911,7 @@ export default function App(): React.JSX.Element {
 
         <EditorPanel
           block={selectedBlock}
-          disabled={jobActive}
+          disabled={selectedPageEditLocked}
           onUpdate={updateSelectedBlock}
           onDelete={deleteSelectedBlock}
           onDuplicate={duplicateSelectedBlock}

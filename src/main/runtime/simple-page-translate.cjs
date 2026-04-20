@@ -1,5 +1,5 @@
 const { spawn } = require("node:child_process");
-const { existsSync, readdirSync } = require("node:fs");
+const { existsSync, readdirSync, statSync } = require("node:fs");
 const { mkdir, readFile, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
@@ -10,6 +10,7 @@ const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 const DEFAULT_API_KEY = "local-llama-server";
 const MAX_LOG_PREVIEW_LENGTH = 8000;
+const MM_PROJ_CANDIDATE_NAMES = ["mmproj-BF16.gguf", "mmproj-F16.gguf", "mmproj-F32.gguf", "mmproj.gguf"];
 
 function truncateText(value, maxLength = MAX_LOG_PREVIEW_LENGTH) {
   const text = String(value ?? "");
@@ -186,15 +187,38 @@ function resolveWorkingDir(options = {}) {
 }
 
 function resolveHfHomeDir(options = {}) {
-  return options.hfHomeDir || process.env.HF_HOME || process.env.MANGA_TRANSLATOR_HF_HOME || null;
+  return options.hfHomeDir || process.env.HF_HOME || process.env.MANGA_TRANSLATOR_HF_HOME || defaultHfHomeDir();
 }
 
 function resolveHubCacheDir(options = {}) {
-  return options.hfHubCacheDir || process.env.HF_HUB_CACHE || process.env.HUGGINGFACE_HUB_CACHE || null;
+  const hfHomeDir = resolveHfHomeDir(options);
+  return options.hfHubCacheDir || process.env.HF_HUB_CACHE || process.env.HUGGINGFACE_HUB_CACHE || (hfHomeDir ? path.join(hfHomeDir, "hub") : null);
+}
+
+function defaultHfHomeDir() {
+  const xdgCacheHome = String(process.env.XDG_CACHE_HOME ?? "").trim();
+  if (xdgCacheHome) {
+    return path.join(xdgCacheHome, "huggingface");
+  }
+
+  const homeDir = String(process.env.USERPROFILE ?? process.env.HOME ?? "").trim();
+  if (!homeDir) {
+    return null;
+  }
+
+  return path.join(homeDir, ".cache", "huggingface");
 }
 
 function repoCacheDir(repoId, hubCacheDir) {
   return path.join(hubCacheDir, `models--${repoId.replace(/\//g, "--")}`);
+}
+
+function safeMtimeMs(filePath) {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 function findNamedFile(rootDir, expectedName, maxDepth = 6) {
@@ -224,14 +248,127 @@ function findNamedFile(rootDir, expectedName, maxDepth = 6) {
   return null;
 }
 
-function isModelCached(options = {}) {
-  const hubCacheDir = resolveHubCacheDir(options);
-  if (!hubCacheDir) {
-    return false;
+function findMatchingFile(rootDir, predicate, maxDepth = 6) {
+  if (!rootDir || !existsSync(rootDir)) {
+    return null;
   }
 
-  const cachedModel = findNamedFile(repoCacheDir(resolveConfiguredModelRepo(options), hubCacheDir), resolveConfiguredModelFile(options));
-  return Boolean(cachedModel);
+  const queue = [{ dir: rootDir, depth: 0 }];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+
+    const entries = readdirSync(current.dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current.dir, entry.name);
+      if (entry.isFile() && predicate(entry.name, fullPath)) {
+        return fullPath;
+      }
+      if (entry.isDirectory() && current.depth < maxDepth) {
+        queue.push({ dir: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return null;
+}
+
+function listSnapshotDirs(repoDir) {
+  const snapshotsDir = path.join(repoDir, "snapshots");
+  if (!existsSync(snapshotsDir)) {
+    return [];
+  }
+
+  return readdirSync(snapshotsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(snapshotsDir, entry.name))
+    .sort((left, right) => safeMtimeMs(right) - safeMtimeMs(left) || right.localeCompare(left));
+}
+
+function findPreferredMmprojFile(rootDir) {
+  for (const candidateName of MM_PROJ_CANDIDATE_NAMES) {
+    const match = findNamedFile(rootDir, candidateName, 2);
+    if (match) {
+      return match;
+    }
+  }
+
+  return findMatchingFile(rootDir, (name) => /^mmproj.*\.gguf$/i.test(name), 2);
+}
+
+function resolveLocalModelAssets(options = {}) {
+  const hubCacheDir = resolveHubCacheDir(options);
+  if (!hubCacheDir) {
+    return {
+      hubCacheDir: null,
+      repoDir: null,
+      snapshotDir: null,
+      modelPath: null,
+      mmprojPath: null,
+      launchMode: "remote"
+    };
+  }
+
+  const repoDir = repoCacheDir(resolveConfiguredModelRepo(options), hubCacheDir);
+  if (!existsSync(repoDir)) {
+    return {
+      hubCacheDir,
+      repoDir,
+      snapshotDir: null,
+      modelPath: null,
+      mmprojPath: null,
+      launchMode: "remote"
+    };
+  }
+
+  const configuredModelFile = resolveConfiguredModelFile(options);
+  for (const snapshotDir of listSnapshotDirs(repoDir)) {
+    const modelPath = path.join(snapshotDir, configuredModelFile);
+    if (!existsSync(modelPath)) {
+      continue;
+    }
+
+    const mmprojPath = findPreferredMmprojFile(snapshotDir);
+    if (mmprojPath) {
+      return {
+        hubCacheDir,
+        repoDir,
+        snapshotDir,
+        modelPath,
+        mmprojPath,
+        launchMode: "local"
+      };
+    }
+  }
+
+  const modelPath = findNamedFile(repoDir, configuredModelFile);
+  if (!modelPath) {
+    return {
+      hubCacheDir,
+      repoDir,
+      snapshotDir: null,
+      modelPath: null,
+      mmprojPath: null,
+      launchMode: "remote"
+    };
+  }
+
+  const snapshotDir = path.dirname(modelPath);
+  const mmprojPath = findPreferredMmprojFile(snapshotDir);
+  return {
+    hubCacheDir,
+    repoDir,
+    snapshotDir,
+    modelPath,
+    mmprojPath,
+    launchMode: mmprojPath ? "local" : "partial"
+  };
+}
+
+function isModelCached(options = {}) {
+  return resolveLocalModelAssets(options).launchMode === "local";
 }
 
 const PROMPT_KO_BBOX_LINES_MULTIVIEW = [
@@ -674,9 +811,21 @@ function resolveConfiguredModelFile(options = {}) {
 }
 
 function buildLaunchArgs(options) {
+  const localAssets = resolveLocalModelAssets(options);
   const args = [
-    "-hf",
-    resolveConfiguredModelRepo(options),
+    ...(localAssets.launchMode === "local"
+      ? [
+          "-m",
+          localAssets.modelPath,
+          "--mmproj",
+          localAssets.mmprojPath
+        ]
+      : [
+          "-hf",
+          resolveConfiguredModelRepo(options),
+          "-hff",
+          resolveConfiguredModelFile(options)
+        ]),
     "--host",
     "127.0.0.1",
     "--port",
@@ -715,9 +864,7 @@ function buildLaunchArgs(options) {
     "--cache-ram",
     "0",
     "--chat-template-kwargs",
-    "{\"enable_thinking\":false}",
-    "-hff",
-    resolveConfiguredModelFile(options)
+    "{\"enable_thinking\":false}"
   ];
 
   if (typeof options.imageMinTokens === "number" && Number.isFinite(options.imageMinTokens)) {
@@ -1012,6 +1159,7 @@ async function saveArtifacts(options, result) {
 
 module.exports = {
   buildMessages,
+  buildLaunchArgs,
   enhanceBitmapBuffer,
   getScaledSize,
   isModelCached,

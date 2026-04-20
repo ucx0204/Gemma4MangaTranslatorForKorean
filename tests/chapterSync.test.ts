@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChapterSnapshot } from "../src/shared/types";
-import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "../src/renderer/src/lib/chapterSync";
+import { markChapterPagesRunning, mergeLiveChapterPreservingDirtyCompletedPages, resolveSelectionAfterChapterSync } from "../src/renderer/src/lib/chapterSync";
 
 function makeChapter(): ChapterSnapshot {
   return {
@@ -92,5 +92,75 @@ describe("chapter sync helpers", () => {
     const next = markChapterPagesRunning(makeChapter(), "single-page", "page-1");
 
     expect(next.pages.map((page) => page.analysisStatus)).toEqual(["running", "idle"]);
+  });
+
+  it("preserves local edits for dirty completed pages during live refresh", () => {
+    const local = makeChapter();
+    local.pages[0] = {
+      ...local.pages[0],
+      blocks: [
+        {
+          ...local.pages[0].blocks[0],
+          translatedText: "수정된 번역문"
+        }
+      ]
+    };
+
+    const live = makeChapter();
+    live.pages[1] = {
+      ...live.pages[1],
+      analysisStatus: "completed",
+      blocks: [
+        {
+          id: "block-2",
+          type: "caption",
+          bbox: { x: 10, y: 20, w: 30, h: 40 },
+          sourceText: "JP2",
+          translatedText: "KO2",
+          confidence: 0.8,
+          sourceDirection: "vertical",
+          renderDirection: "horizontal",
+          fontSizePx: 20,
+          lineHeight: 1.2,
+          textAlign: "center",
+          textColor: "#111111",
+          backgroundColor: "#fffdf5",
+          opacity: 1
+        }
+      ]
+    };
+
+    const merged = mergeLiveChapterPreservingDirtyCompletedPages(live, local, ["page-1"]);
+
+    expect(merged.preservedDirtyPageIds).toEqual(["page-1"]);
+    expect(merged.chapter.pages[0]?.blocks[0]?.translatedText).toBe("수정된 번역문");
+    expect(merged.chapter.pages[1]?.analysisStatus).toBe("completed");
+    expect(merged.chapter.pages[1]?.blocks[0]?.translatedText).toBe("KO2");
+  });
+
+  it("does not preserve dirty pages once they are no longer completed", () => {
+    const local = makeChapter();
+    local.pages[0] = {
+      ...local.pages[0],
+      blocks: [
+        {
+          ...local.pages[0].blocks[0],
+          translatedText: "수정된 번역문"
+        }
+      ]
+    };
+
+    const live = makeChapter();
+    live.pages[0] = {
+      ...live.pages[0],
+      analysisStatus: "running",
+      blocks: []
+    };
+
+    const merged = mergeLiveChapterPreservingDirtyCompletedPages(live, local, ["page-1"]);
+
+    expect(merged.preservedDirtyPageIds).toEqual([]);
+    expect(merged.chapter.pages[0]?.analysisStatus).toBe("running");
+    expect(merged.chapter.pages[0]?.blocks).toEqual([]);
   });
 });

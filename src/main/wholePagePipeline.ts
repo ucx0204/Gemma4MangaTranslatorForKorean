@@ -115,7 +115,7 @@ export async function runWholePagePipeline({
     pageTotal: pages.length,
     detail: modelCached
       ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
-      : "로컬 모델이 없어 첫 실행 다운로드가 필요합니다."
+      : "로컬 모델 자산이 없거나 부족해 다운로드/갱신이 필요할 수 있습니다."
   });
 
   const server = await runtime.simplePage.startServer(baseOptions);

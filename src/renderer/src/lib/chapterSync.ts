@@ -5,6 +5,11 @@ type ChapterSelection = {
   selectedBlockId: string | null;
 };
 
+export type LiveChapterMergeResult = {
+  chapter: ChapterSnapshot;
+  preservedDirtyPageIds: string[];
+};
+
 export function resolveSelectionAfterChapterSync(
   chapter: ChapterSnapshot,
   selectedPageId: string | null,
@@ -18,6 +23,52 @@ export function resolveSelectionAfterChapterSync(
   return {
     selectedPageId: nextSelectedPageId,
     selectedBlockId: nextSelectedBlockId
+  };
+}
+
+export function mergeLiveChapterPreservingDirtyCompletedPages(
+  liveChapter: ChapterSnapshot,
+  localChapter: ChapterSnapshot | null,
+  dirtyPageIds: Iterable<string>
+): LiveChapterMergeResult {
+  if (!localChapter || localChapter.id !== liveChapter.id) {
+    return {
+      chapter: liveChapter,
+      preservedDirtyPageIds: []
+    };
+  }
+
+  const dirtyPageIdSet = new Set(dirtyPageIds);
+  if (dirtyPageIdSet.size === 0) {
+    return {
+      chapter: liveChapter,
+      preservedDirtyPageIds: []
+    };
+  }
+
+  const localPages = new Map(localChapter.pages.map((page) => [page.id, page]));
+  const preservedDirtyPageIds: string[] = [];
+
+  return {
+    chapter: {
+      ...liveChapter,
+      pages: liveChapter.pages.map((page) => {
+        const localPage = localPages.get(page.id);
+        if (!localPage || !dirtyPageIdSet.has(page.id)) {
+          return page;
+        }
+        if (page.analysisStatus !== "completed" || localPage.analysisStatus !== "completed") {
+          return page;
+        }
+
+        preservedDirtyPageIds.push(page.id);
+        return {
+          ...localPage,
+          lastError: page.lastError
+        };
+      })
+    },
+    preservedDirtyPageIds
   };
 }
 
