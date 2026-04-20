@@ -3,8 +3,11 @@ import {
   buildBaseTranslationOptions,
   DEFAULT_GEMMA_GPU_LAYERS,
   DEFAULT_GEMMA_MODEL_FILE,
+  DEFAULT_GEMMA_MODEL_FILE_Q3,
+  DEFAULT_GEMMA_MODEL_FILE_Q6,
   DEFAULT_TRANSLATION_MODE,
   parseStoredAppSettings,
+  resolveRecommendedModelFile,
   resolveDefaultAppSettings
 } from "../src/main/appSettings";
 import type { AppSettings } from "../src/shared/types";
@@ -16,6 +19,20 @@ describe("app settings helpers", () => {
     expect(defaults.gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE);
     expect(defaults.gemma.gpuLayers).toBe(DEFAULT_GEMMA_GPU_LAYERS);
     expect(defaults.translationMode).toBe(DEFAULT_TRANSLATION_MODE);
+  });
+
+  it("recommends model files from detected VRAM tiers", () => {
+    expect(resolveRecommendedModelFile(12000)).toBe(DEFAULT_GEMMA_MODEL_FILE_Q3);
+    expect(resolveRecommendedModelFile(16384)).toBe(DEFAULT_GEMMA_MODEL_FILE_Q3);
+    expect(resolveRecommendedModelFile(24564)).toBe(DEFAULT_GEMMA_MODEL_FILE);
+    expect(resolveRecommendedModelFile(32768)).toBe(DEFAULT_GEMMA_MODEL_FILE_Q6);
+    expect(resolveRecommendedModelFile(null)).toBe(DEFAULT_GEMMA_MODEL_FILE);
+  });
+
+  it("uses the VRAM-based default model when no override is provided", () => {
+    expect(resolveDefaultAppSettings({}, 12000).gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE_Q3);
+    expect(resolveDefaultAppSettings({}, 24564).gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE);
+    expect(resolveDefaultAppSettings({}, 32768).gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE_Q6);
   });
 
   it("fills missing or partial stored settings from environment-based defaults", () => {

@@ -4,6 +4,11 @@ import type { AppSettings, ModelSource, TranslationMode } from "../../../shared/
 const MAX_GPU_LAYERS = 30;
 const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const MODEL_PRESETS = {
+  q3: {
+    label: "Q3_K_XL",
+    modelRepo: DEFAULT_GEMMA_MODEL_REPO,
+    modelFile: "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf"
+  },
   q4: {
     label: "Q4_K_XL",
     modelRepo: DEFAULT_GEMMA_MODEL_REPO,
@@ -353,7 +358,7 @@ export function SettingsModal({
               <div className="settings-field-stack">
                 <span>모델</span>
                 <div className="settings-preset-group" role="tablist" aria-label="모델 프리셋">
-                  {(["q4", "q6", "custom"] as const).map((presetId) => (
+                  {(["q3", "q4", "q6", "custom"] as const).map((presetId) => (
                     <button
                       key={presetId}
                       type="button"
@@ -369,6 +374,7 @@ export function SettingsModal({
                     </button>
                   ))}
                 </div>
+                <p className="muted-line modal-note">대략 권장 VRAM: Q3 약 16GB, Q4 약 24GB, Q6 약 32GB</p>
               </div>
               {selectedPreset === "custom" ? (
                 <>
@@ -549,6 +555,10 @@ function resolveModelPreset(modelRepo: string, modelFile: string): ModelPresetId
 
   if (matchesPreset(MODEL_PRESETS.q4, trimmedModelRepo, trimmedModelFile)) {
     return "q4";
+  }
+
+  if (matchesPreset(MODEL_PRESETS.q3, trimmedModelRepo, trimmedModelFile)) {
+    return "q3";
   }
 
   if (matchesPreset(MODEL_PRESETS.q6, trimmedModelRepo, trimmedModelFile)) {

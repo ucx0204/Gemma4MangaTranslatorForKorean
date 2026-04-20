@@ -1,7 +1,9 @@
 import type { AppSettings, ModelSource, TranslationMode } from "../shared/types";
 
 export const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
+export const DEFAULT_GEMMA_MODEL_FILE_Q3 = "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf";
 export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+export const DEFAULT_GEMMA_MODEL_FILE_Q6 = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 export const MAX_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_TRANSLATION_MODE: TranslationMode = "fast";
@@ -74,12 +76,12 @@ export type TranslationOptionPaths = {
   hfHubCacheDir?: string;
 };
 
-export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env): AppSettings {
+export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env, detectedGpuMemoryMb?: number | null): AppSettings {
   return {
     gemma: {
       modelSource: DEFAULT_MODEL_SOURCE,
       modelRepo: resolveNonEmptyString(env.MANGA_TRANSLATOR_MODEL_HF, DEFAULT_GEMMA_MODEL_REPO),
-      modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, DEFAULT_GEMMA_MODEL_FILE),
+      modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, resolveRecommendedModelFile(detectedGpuMemoryMb)),
       gpuLayers: resolveGpuLayerCount(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
     },
     translationMode: DEFAULT_TRANSLATION_MODE,
@@ -231,4 +233,20 @@ function resolveBoolean(value: unknown, fallback: boolean): boolean {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+export function resolveRecommendedModelFile(gpuMemoryMb?: number | null): string {
+  if (typeof gpuMemoryMb !== "number" || !Number.isFinite(gpuMemoryMb) || gpuMemoryMb <= 0) {
+    return DEFAULT_GEMMA_MODEL_FILE;
+  }
+
+  if (gpuMemoryMb >= 32000) {
+    return DEFAULT_GEMMA_MODEL_FILE_Q6;
+  }
+
+  if (gpuMemoryMb >= 24000) {
+    return DEFAULT_GEMMA_MODEL_FILE;
+  }
+
+  return DEFAULT_GEMMA_MODEL_FILE_Q3;
 }
