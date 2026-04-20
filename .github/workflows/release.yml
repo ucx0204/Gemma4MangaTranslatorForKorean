@@ -53,11 +53,10 @@ jobs:
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             "tag=${{ inputs.tag_name }}" >> $env:GITHUB_OUTPUT
-            "target=${{ github.sha }}" >> $env:GITHUB_OUTPUT
           } else {
             "tag=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
-            "target=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
           }
+          "target=${{ github.sha }}" >> $env:GITHUB_OUTPUT
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
