@@ -30,6 +30,7 @@ function createDetailedError(message, detail = {}, cause) {
 }
 
 function buildOptionSummary(options = {}) {
+  const launchTarget = inspectModelLaunch(options);
   return {
     label: options.label,
     imagePath: options.imagePath,
@@ -56,8 +57,12 @@ function buildOptionSummary(options = {}) {
     workingDir: options.workingDir,
     toolsDir: options.toolsDir,
     serverPath: options.serverPath,
+    modelSource: resolveConfiguredModelSource(options),
     modelRepo: options.modelRepo,
     modelFile: options.modelFile,
+    localModelPath: resolveConfiguredLocalModelPath(options),
+    localMmprojPath: resolveConfiguredLocalMmprojPath(options),
+    launchMode: launchTarget.launchMode,
     hfHomeDir: resolveHfHomeDir(options),
     hfHubCacheDir: resolveHubCacheDir(options)
   };
@@ -75,7 +80,7 @@ function summarizeImageVariants(imageVariants) {
 function buildRequestSummary(server, options, imageVariants, promptText, systemPrompt) {
   return {
     endpoint: `${server.baseUrl}/chat/completions`,
-    model: resolveConfiguredModelRepo(options),
+    model: resolveRequestModelName(options),
     label: options.label,
     promptMode: options.promptMode,
     promptPreview: truncateText(promptText, 2400),
@@ -298,7 +303,21 @@ function findPreferredMmprojFile(rootDir) {
   return findMatchingFile(rootDir, (name) => /^mmproj.*\.gguf$/i.test(name), 2);
 }
 
-function resolveLocalModelAssets(options = {}) {
+function resolveConfiguredModelSource(options = {}) {
+  return String(options.modelSource ?? "").trim() === "local" ? "local" : "huggingface";
+}
+
+function resolveConfiguredLocalModelPath(options = {}) {
+  const value = String(options.localModelPath ?? "").trim();
+  return value ? path.resolve(value) : null;
+}
+
+function resolveConfiguredLocalMmprojPath(options = {}) {
+  const value = String(options.localMmprojPath ?? "").trim();
+  return value ? path.resolve(value) : null;
+}
+
+function resolveCachedModelAssets(options = {}) {
   const hubCacheDir = resolveHubCacheDir(options);
   if (!hubCacheDir) {
     return {
@@ -307,7 +326,7 @@ function resolveLocalModelAssets(options = {}) {
       snapshotDir: null,
       modelPath: null,
       mmprojPath: null,
-      launchMode: "remote"
+      launchMode: "huggingface"
     };
   }
 
@@ -319,7 +338,7 @@ function resolveLocalModelAssets(options = {}) {
       snapshotDir: null,
       modelPath: null,
       mmprojPath: null,
-      launchMode: "remote"
+      launchMode: "huggingface"
     };
   }
 
@@ -338,7 +357,7 @@ function resolveLocalModelAssets(options = {}) {
         snapshotDir,
         modelPath,
         mmprojPath,
-        launchMode: "local"
+        launchMode: "cached-hf"
       };
     }
   }
@@ -351,7 +370,7 @@ function resolveLocalModelAssets(options = {}) {
       snapshotDir: null,
       modelPath: null,
       mmprojPath: null,
-      launchMode: "remote"
+      launchMode: "huggingface"
     };
   }
 
@@ -363,12 +382,38 @@ function resolveLocalModelAssets(options = {}) {
     snapshotDir,
     modelPath,
     mmprojPath,
-    launchMode: mmprojPath ? "local" : "partial"
+    launchMode: "huggingface"
+  };
+}
+
+function inspectModelLaunch(options = {}) {
+  if (resolveConfiguredModelSource(options) === "local") {
+    const modelPath = resolveConfiguredLocalModelPath(options);
+    const explicitMmprojPath = resolveConfiguredLocalMmprojPath(options);
+    const detectedMmprojPath = modelPath ? findPreferredMmprojFile(path.dirname(modelPath)) : null;
+    const mmprojPath = explicitMmprojPath || detectedMmprojPath;
+
+    return {
+      launchMode: "local",
+      modelPath,
+      mmprojPath,
+      requiresDownload: false
+    };
+  }
+
+  const cachedAssets = resolveCachedModelAssets(options);
+  return {
+    ...cachedAssets,
+    requiresDownload: cachedAssets.launchMode !== "cached-hf"
   };
 }
 
 function isModelCached(options = {}) {
-  return resolveLocalModelAssets(options).launchMode === "local";
+  const launchTarget = inspectModelLaunch(options);
+  if (launchTarget.launchMode === "local") {
+    return Boolean(launchTarget.modelPath && existsSync(launchTarget.modelPath));
+  }
+  return launchTarget.launchMode === "cached-hf";
 }
 
 const PROMPT_KO_BBOX_LINES_MULTIVIEW = [
@@ -810,15 +855,32 @@ function resolveConfiguredModelFile(options = {}) {
   return String(options.modelFile ?? process.env.LLAMA_ARG_HF_FILE ?? "").trim() || DEFAULT_HF_FILE;
 }
 
+function resolveRequestModelName(options = {}) {
+  const launchTarget = inspectModelLaunch(options);
+  if (launchTarget.launchMode === "local" && launchTarget.modelPath) {
+    return path.basename(launchTarget.modelPath);
+  }
+  return resolveConfiguredModelRepo(options);
+}
+
 function buildLaunchArgs(options) {
-  const localAssets = resolveLocalModelAssets(options);
+  const launchTarget = inspectModelLaunch(options);
+  if (launchTarget.launchMode === "local" && !launchTarget.modelPath) {
+    throw createDetailedError("로컬 모델 파일 경로가 설정되지 않았습니다.", {
+      optionSummary: buildOptionSummary(options)
+    });
+  }
   const args = [
-    ...(localAssets.launchMode === "local"
+    ...((launchTarget.launchMode === "local" || launchTarget.launchMode === "cached-hf") && launchTarget.modelPath
       ? [
           "-m",
-          localAssets.modelPath,
-          "--mmproj",
-          localAssets.mmprojPath
+          launchTarget.modelPath,
+          ...(launchTarget.mmprojPath
+            ? [
+                "--mmproj",
+                launchTarget.mmprojPath
+              ]
+            : [])
         ]
       : [
           "-hf",
@@ -1027,7 +1089,7 @@ async function requestTranslation(server, options) {
   const promptText = options.promptOverrideText || PROMPT_KO_BBOX_LINES_MULTIVIEW;
   const systemPrompt = buildSystemPrompt(options);
   const requestBody = {
-    model: resolveConfiguredModelRepo(options),
+    model: resolveRequestModelName(options),
     temperature: options.temperature,
     top_p: options.topP,
     top_k: options.topK,
@@ -1117,6 +1179,86 @@ async function requestTranslation(server, options) {
   };
 }
 
+async function testModelReply(server, options) {
+  const requestBody = {
+    model: resolveRequestModelName(options),
+    temperature: 0,
+    top_p: 1,
+    top_k: 40,
+    presence_penalty: 0,
+    frequency_penalty: 0,
+    max_tokens: 48,
+    reasoning_budget: 0,
+    enable_thinking: false,
+    messages: [
+      {
+        role: "system",
+        content: [{ type: "text", text: "Reply in one short sentence." }]
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Say 'model test ok'." }]
+      }
+    ]
+  };
+
+  let response;
+  try {
+    response = await fetch(`${server.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DEFAULT_API_KEY}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    throw createDetailedError("모델 테스트 요청을 보내지 못했습니다.", {
+      requestBody: {
+        ...requestBody,
+        messages: requestBody.messages
+      }
+    }, error);
+  }
+
+  const rawText = await response.text();
+  if (!response.ok) {
+    throw createDetailedError(`모델 테스트 응답이 실패했습니다 (${response.status}).`, {
+      status: response.status,
+      statusText: response.statusText,
+      rawTextPreview: truncateText(rawText, 4000)
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (error) {
+    throw createDetailedError("모델 테스트 응답을 JSON으로 읽지 못했습니다.", {
+      rawTextPreview: truncateText(rawText, 4000)
+    }, error);
+  }
+
+  const content = parsed?.choices?.[0]?.message?.content;
+  const outputText = typeof content === "string"
+    ? content.trim()
+    : Array.isArray(content)
+      ? content.map((item) => item?.text || "").join("\n").trim()
+      : "";
+
+  if (!outputText) {
+    throw createDetailedError("모델 테스트 응답이 비어 있습니다.", {
+      rawResponse: parsed
+    });
+  }
+
+  return {
+    outputText,
+    launchTarget: inspectModelLaunch(options)
+  };
+}
+
 async function saveArtifacts(options, result) {
   await mkdir(options.outputDir, { recursive: true });
   const systemPrompt = buildSystemPrompt(options);
@@ -1134,8 +1276,11 @@ async function saveArtifacts(options, result) {
       batch: options.batch,
       ubatch: options.ubatch,
       gpuLayers: options.gpuLayers,
+      modelSource: resolveConfiguredModelSource(options),
       modelRepo: resolveConfiguredModelRepo(options),
       modelFile: resolveConfiguredModelFile(options),
+      localModelPath: resolveConfiguredLocalModelPath(options),
+      localMmprojPath: resolveConfiguredLocalMmprojPath(options),
       fitTargetMb: options.fitTargetMb,
       imageMinTokens: options.imageMinTokens,
       imageMaxTokens: options.imageMaxTokens,
@@ -1162,10 +1307,12 @@ module.exports = {
   buildLaunchArgs,
   enhanceBitmapBuffer,
   getScaledSize,
+  inspectModelLaunch,
   isModelCached,
   prepareImageVariants,
   requestTranslation,
   saveArtifacts,
   startServer,
-  stopServer
+  stopServer,
+  testModelReply
 };

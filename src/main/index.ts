@@ -1,7 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { extname, join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { createServer } from "node:net";
+import { dirname, extname, join } from "node:path";
 import { ensureWritableAppDirectories } from "./appPaths";
+import { buildBaseTranslationOptions } from "./appSettings";
 import {
   cleanupLegacyLogs,
   deleteChapter,
@@ -29,7 +32,16 @@ import {
 import { getLogPath, logError, logInfo, resetAppLog, writeLog } from "./logger";
 import { getAppSettings, resetAppSettings, saveAppSettings } from "./settingsStore";
 import { runWholePagePipeline } from "./wholePagePipeline";
-import type { AppSettings, CreateImportRequest, ImportPreviewResult, JobEvent, StartAnalysisRequest, StartAnalysisResult } from "../shared/types";
+import type {
+  AppSettings,
+  CreateImportRequest,
+  ImportPreviewResult,
+  JobEvent,
+  LocalModelPickResult,
+  ModelTestResult,
+  StartAnalysisRequest,
+  StartAnalysisResult
+} from "../shared/types";
 
 const appPaths = ensureWritableAppDirectories();
 resetAppLog();
@@ -63,6 +75,17 @@ let activeJob: {
   cleanup?: () => Promise<void>;
   lastEvent?: JobEvent;
 } | null = null;
+
+type SimplePageRuntime = {
+  startServer: (options: Record<string, unknown>) => Promise<{ baseUrl: string; child: unknown; startedByScript: boolean }>;
+  stopServer: (server: { child: unknown } | null | undefined) => Promise<void>;
+  testModelReply: (server: { baseUrl: string }, options: Record<string, unknown>) => Promise<{
+    outputText: string;
+    launchTarget: { launchMode: "huggingface" | "cached-hf" | "local"; modelPath?: string | null; mmprojPath?: string | null };
+  }>;
+};
+
+let cachedSimplePageRuntime: SimplePageRuntime | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -145,6 +168,81 @@ function registerIpc(): void {
   ipcMain.handle("settings:get", async () => getAppSettings());
   ipcMain.handle("settings:save", async (_event, settings: AppSettings) => saveAppSettings(settings));
   ipcMain.handle("settings:reset", async () => resetAppSettings());
+  ipcMain.handle("settings:pick-local-model", async (): Promise<LocalModelPickResult | null> => {
+    const options = {
+      title: "로컬 GGUF 모델 선택",
+      properties: ["openFile"],
+      filters: [{ name: "GGUF Model", extensions: ["gguf"] }]
+    } satisfies Electron.OpenDialogOptions;
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+
+    const modelPath = result.filePaths[0];
+    const detectedMmprojPath = detectSiblingMmprojPath(modelPath);
+    return {
+      modelPath,
+      ...(detectedMmprojPath ? { detectedMmprojPath } : {})
+    };
+  });
+  ipcMain.handle("settings:pick-local-mmproj", async (): Promise<string | null> => {
+    const options = {
+      title: "mmproj 파일 선택",
+      properties: ["openFile"],
+      filters: [{ name: "GGUF Model", extensions: ["gguf"] }]
+    } satisfies Electron.OpenDialogOptions;
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+  ipcMain.handle("settings:test-model", async (_event, settings: AppSettings): Promise<ModelTestResult> => {
+    if (activeJob) {
+      return {
+        ok: false,
+        message: "번역 작업 중에는 모델 테스트를 실행할 수 없습니다.",
+        launchMode: settings.gemma.modelSource === "local" ? "local" : "huggingface"
+      };
+    }
+
+    const runtime = loadSimplePageRuntime();
+    const testId = randomUUID();
+    const port = await reserveFreePort();
+    const options = {
+      ...buildBaseTranslationOptions({
+        jobId: `settings-test-${testId}`,
+        runDir: join(appPaths.dataRoot, "model-tests", testId),
+        paths: appPaths,
+        settings
+      }),
+      reuseServer: false,
+      port,
+      label: `settings-test-${testId}`
+    };
+
+    let server: Awaited<ReturnType<SimplePageRuntime["startServer"]>> | null = null;
+    try {
+      server = await runtime.startServer(options);
+      const result = await runtime.testModelReply(server, options);
+      return {
+        ok: true,
+        message: `모델 로드 및 텍스트 응답 확인 완료: ${result.outputText}`,
+        launchMode: result.launchTarget.launchMode,
+        resolvedModelPath: result.launchTarget.modelPath ?? null,
+        resolvedMmprojPath: result.launchTarget.mmprojPath ?? null
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: formatModelTestError(error),
+        launchMode: settings.gemma.modelSource === "local" ? "local" : "huggingface"
+      };
+    } finally {
+      await runtime.stopServer(server);
+    }
+  });
 
   ipcMain.handle("dialogs:confirm", async (_event, title: string, message: string, detail?: string) => {
     const options = {
@@ -401,4 +499,74 @@ function isAbortError(error: unknown): boolean {
 
 export function isZipPath(path: string): boolean {
   return extname(path).toLowerCase() === ".zip";
+}
+
+function loadSimplePageRuntime(): SimplePageRuntime {
+  if (cachedSimplePageRuntime) {
+    return cachedSimplePageRuntime;
+  }
+
+  cachedSimplePageRuntime = require(join(appPaths.runtimeDir, "simple-page-translate.cjs")) as SimplePageRuntime;
+  return cachedSimplePageRuntime;
+}
+
+function detectSiblingMmprojPath(modelPath: string): string | null {
+  const folder = dirname(modelPath);
+  if (!existsSync(folder)) {
+    return null;
+  }
+
+  const preferredNames = ["mmproj-BF16.gguf", "mmproj-F16.gguf", "mmproj-F32.gguf", "mmproj.gguf"];
+  for (const name of preferredNames) {
+    const candidate = join(folder, name);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const match = readdirSync(folder, { withFileTypes: true }).find(
+    (entry) => entry.isFile() && /^mmproj.*\.gguf$/i.test(entry.name)
+  );
+  return match ? join(folder, match.name) : null;
+}
+
+async function reserveFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("모델 테스트용 포트를 확보하지 못했습니다."));
+        return;
+      }
+      const port = address.port;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+function formatModelTestError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const details = [
+    error.message,
+    "recentStderr" in error && typeof error.recentStderr === "string" && error.recentStderr.trim()
+      ? error.recentStderr.trim()
+      : null,
+    "rawTextPreview" in error && typeof error.rawTextPreview === "string" && error.rawTextPreview.trim()
+      ? error.rawTextPreview.trim()
+      : null
+  ].filter(Boolean);
+
+  return details.join("\n\n");
 }

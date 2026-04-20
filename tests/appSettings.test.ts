@@ -29,6 +29,7 @@ describe("app settings helpers", () => {
     expect(parseStoredAppSettings("", defaults)).toEqual(defaults);
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"custom/repo\"}}", defaults)).toEqual({
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "custom/repo",
         modelFile: "env-default.gguf",
         gpuLayers: 12
@@ -43,6 +44,7 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":31}}", defaults)).toEqual({
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 30
@@ -53,6 +55,7 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":99}}", defaults)).toEqual({
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 30
@@ -63,6 +66,7 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":-1}}", defaults)).toEqual({
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 0
@@ -73,6 +77,7 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("{\"gemma\":{\"gpuLayers\":\"abc\"}}", defaults)).toEqual({
       gemma: {
+        modelSource: "huggingface",
         modelRepo: defaults.gemma.modelRepo,
         modelFile: defaults.gemma.modelFile,
         gpuLayers: DEFAULT_GEMMA_GPU_LAYERS
@@ -117,6 +122,7 @@ describe("app settings helpers", () => {
   it("builds fast mode translation options from saved model settings while preserving other defaults", () => {
     const settings: AppSettings = {
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
@@ -163,6 +169,7 @@ describe("app settings helpers", () => {
   it("builds accuracy mode translation options with the previous larger image budget", () => {
     const settings: AppSettings = {
       gemma: {
+        modelSource: "huggingface",
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
@@ -186,5 +193,33 @@ describe("app settings helpers", () => {
     expect(options.imageMinTokens).toBe(1120);
     expect(options.imageMaxTokens).toBe(1120);
     expect(options.includeEnhancedVariant).toBe(true);
+  });
+
+  it("keeps local model settings when the source is local", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(
+      parseStoredAppSettings(
+        JSON.stringify({
+          gemma: {
+            modelSource: "local",
+            localModelPath: "D:/models/supergemma-q4.gguf",
+            localMmprojPath: "D:/models/mmproj.gguf"
+          }
+        }),
+        defaults
+      )
+    ).toEqual({
+      gemma: {
+        modelSource: "local",
+        modelRepo: defaults.gemma.modelRepo,
+        modelFile: defaults.gemma.modelFile,
+        localModelPath: "D:/models/supergemma-q4.gguf",
+        localMmprojPath: "D:/models/mmproj.gguf",
+        gpuLayers: defaults.gemma.gpuLayers
+      },
+      translationMode: "fast",
+      nsfwMode: false
+    });
   });
 });

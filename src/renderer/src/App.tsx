@@ -170,6 +170,7 @@ export default function App(): React.JSX.Element {
         kind: event.kind,
         status: event.status,
         progressText: friendlyText,
+        detail: event.detail ?? current.detail,
         phase: event.phase ?? current.phase,
         progressCurrent: event.progressCurrent ?? current.progressCurrent,
         progressTotal: event.progressTotal ?? current.progressTotal,
@@ -886,12 +887,27 @@ export default function App(): React.JSX.Element {
             <div className="progress-card">
               <div className="progress-meta">
                 <span>{jobState.progressText}</span>
-                <strong>
-                  {progressSnapshot.current} / {progressSnapshot.total}
-                </strong>
+                {progressSnapshot.mode === "determinate" ? (
+                  <strong>
+                    {progressSnapshot.current} / {progressSnapshot.total}
+                  </strong>
+                ) : (
+                  <strong>준비 중</strong>
+                )}
               </div>
-              <div className="progress-track" aria-hidden="true">
-                <div className="progress-fill" style={{ width: `${Math.round(progressSnapshot.ratio * 100)}%` }} />
+              {jobState.detail ? <small className="progress-detail">{jobState.detail}</small> : null}
+              <div
+                className={`progress-track ${progressSnapshot.mode === "indeterminate" ? "indeterminate" : ""}`}
+                aria-hidden="true"
+              >
+                <div
+                  className={`progress-fill ${progressSnapshot.mode === "indeterminate" ? "indeterminate" : ""}`}
+                  style={
+                    progressSnapshot.mode === "determinate"
+                      ? { width: `${Math.round(progressSnapshot.ratio * 100)}%` }
+                      : undefined
+                  }
+                />
               </div>
             </div>
           ) : null}
@@ -941,6 +957,7 @@ export default function App(): React.JSX.Element {
         <SettingsModal
           initialSettings={settings}
           busy={settingsBusy}
+          jobActive={jobActive}
           onCancel={() => {
             if (!settingsBusy) {
               setSettingsOpen(false);

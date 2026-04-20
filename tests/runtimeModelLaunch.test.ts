@@ -46,6 +46,34 @@ function writeCachedAssets({
 }
 
 describe("runtime model launch helpers", () => {
+  it("launches an explicitly configured local GGUF without Hugging Face flags", () => {
+    const localDir = createTempDir("local-model-");
+    const modelPath = join(localDir, "supergemma-q4.gguf");
+    const mmprojPath = join(localDir, "mmproj-BF16.gguf");
+    writeFileSync(modelPath, "model");
+    writeFileSync(mmprojPath, "mmproj");
+
+    const args = buildLaunchArgs({
+      port: 18180,
+      fitTargetMb: 4096,
+      gpuLayers: 30,
+      ctx: 16384,
+      batch: 32,
+      ubatch: 32,
+      modelSource: "local",
+      localModelPath: modelPath,
+      localMmprojPath: mmprojPath
+    });
+
+    expect(args).toContain("-m");
+    expect(args).toContain(modelPath);
+    expect(args).toContain("--mmproj");
+    expect(args).toContain(mmprojPath);
+    expect(args).not.toContain("-hf");
+    expect(args).not.toContain("-hff");
+    expect(isModelCached({ modelSource: "local", localModelPath: modelPath })).toBe(true);
+  });
+
   it("prefers cached local model and mmproj paths when both exist", () => {
     const hubCacheDir = createTempDir("hf-cache-");
     const modelFile = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";

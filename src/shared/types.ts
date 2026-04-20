@@ -4,10 +4,14 @@ export type SourceTextDirection = "horizontal" | "vertical";
 export type RenderTextDirection = "horizontal" | "vertical" | "rotated" | "hidden";
 
 export type JobKind = "gemma-analysis";
+export type ModelSource = "huggingface" | "local";
 
 export type GemmaSettings = {
+  modelSource: ModelSource;
   modelRepo: string;
   modelFile: string;
+  localModelPath?: string;
+  localMmprojPath?: string;
   gpuLayers: number;
 };
 
@@ -184,6 +188,7 @@ export type JobState = {
   kind: JobKind;
   status: JobStatus;
   progressText: string;
+  detail?: string;
   phase?: JobPhase;
   progressCurrent?: number;
   progressTotal?: number;
@@ -195,6 +200,19 @@ export type JobState = {
 
 export type JobEvent = JobState & {
   detail?: string;
+};
+
+export type LocalModelPickResult = {
+  modelPath: string;
+  detectedMmprojPath?: string;
+};
+
+export type ModelTestResult = {
+  ok: boolean;
+  message: string;
+  launchMode: "huggingface" | "cached-hf" | "local";
+  resolvedModelPath?: string | null;
+  resolvedMmprojPath?: string | null;
 };
 
 export type StartAnalysisRequest = {

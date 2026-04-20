@@ -1,10 +1,11 @@
-import type { AppSettings, TranslationMode } from "../shared/types";
+import type { AppSettings, ModelSource, TranslationMode } from "../shared/types";
 
 export const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
 export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
 export const MAX_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_TRANSLATION_MODE: TranslationMode = "fast";
+export const DEFAULT_MODEL_SOURCE: ModelSource = "huggingface";
 
 type TranslationModeDefaults = {
   maxTokens: number;
@@ -54,8 +55,11 @@ export type TranslationOptions = {
   workingDir: string;
   toolsDir: string;
   serverPath: string;
+  modelSource: ModelSource;
   modelRepo: string;
   modelFile: string;
+  localModelPath?: string;
+  localMmprojPath?: string;
   hfHomeDir?: string;
   hfHubCacheDir?: string;
   label: string;
@@ -73,6 +77,7 @@ export type TranslationOptionPaths = {
 export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env): AppSettings {
   return {
     gemma: {
+      modelSource: DEFAULT_MODEL_SOURCE,
       modelRepo: resolveNonEmptyString(env.MANGA_TRANSLATOR_MODEL_HF, DEFAULT_GEMMA_MODEL_REPO),
       modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, DEFAULT_GEMMA_MODEL_FILE),
       gpuLayers: resolveGpuLayerCount(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
@@ -85,10 +90,15 @@ export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env):
 export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppSettings()): AppSettings {
   const record = asRecord(raw);
   const gemma = record?.gemma;
+  const localModelPath = resolveOptionalString(asRecord(gemma)?.localModelPath);
+  const localMmprojPath = resolveOptionalString(asRecord(gemma)?.localMmprojPath);
   return {
     gemma: {
+      modelSource: resolveModelSource(asRecord(gemma)?.modelSource, defaults.gemma.modelSource),
       modelRepo: resolveNonEmptyString(asRecord(gemma)?.modelRepo, defaults.gemma.modelRepo),
       modelFile: resolveNonEmptyString(asRecord(gemma)?.modelFile, defaults.gemma.modelFile),
+      ...(localModelPath ? { localModelPath } : {}),
+      ...(localMmprojPath ? { localMmprojPath } : {}),
       gpuLayers: resolveGpuLayerCount(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
     },
     translationMode: resolveTranslationMode(record?.translationMode, defaults.translationMode),
@@ -147,8 +157,11 @@ export function buildBaseTranslationOptions({
     workingDir: paths.dataRoot,
     toolsDir: paths.toolsDir,
     serverPath: paths.llamaServerPath,
+    modelSource: settings.gemma.modelSource,
     modelRepo: settings.gemma.modelRepo,
     modelFile: settings.gemma.modelFile,
+    localModelPath: settings.gemma.localModelPath,
+    localMmprojPath: settings.gemma.localMmprojPath,
     hfHomeDir: paths.hfHomeDir,
     hfHubCacheDir: paths.hfHubCacheDir,
     label: `app-${jobId}`
@@ -164,12 +177,20 @@ function resolveTranslationMode(value: unknown, fallback: TranslationMode): Tran
   return value === "fast" || value === "accuracy" ? value : fallback;
 }
 
+function resolveModelSource(value: unknown, fallback: ModelSource): ModelSource {
+  return value === "local" || value === "huggingface" ? value : fallback;
+}
+
 function resolveTranslationModeDefaults(mode: TranslationMode): TranslationModeDefaults {
   return TRANSLATION_MODE_DEFAULTS[mode];
 }
 
 function resolveNonEmptyString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function resolveOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function resolveGpuLayerCount(value: unknown, fallback: number): number {

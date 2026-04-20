@@ -7,6 +7,8 @@ import type {
   ImportPreviewResult,
   JobEvent,
   LibraryIndex,
+  LocalModelPickResult,
+  ModelTestResult,
   StartAnalysisRequest,
   StartAnalysisResult
 } from "../shared/types";
@@ -31,6 +33,9 @@ const api = {
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   saveSettings: (settings: AppSettings): Promise<AppSettings> => ipcRenderer.invoke("settings:save", settings),
   resetSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:reset"),
+  pickLocalModelFile: (): Promise<LocalModelPickResult | null> => ipcRenderer.invoke("settings:pick-local-model"),
+  pickLocalMmprojFile: (): Promise<string | null> => ipcRenderer.invoke("settings:pick-local-mmproj"),
+  testModelSettings: (settings: AppSettings): Promise<ModelTestResult> => ipcRenderer.invoke("settings:test-model", settings),
   confirm: (title: string, message: string, detail?: string): Promise<boolean> => ipcRenderer.invoke("dialogs:confirm", title, message, detail),
   getLogPath: (): Promise<string> => ipcRenderer.invoke("logs:get-path"),
   openLogFolder: () => ipcRenderer.invoke("logs:open-folder"),

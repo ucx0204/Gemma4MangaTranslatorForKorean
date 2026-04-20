@@ -5,6 +5,17 @@ type JobWithProgress = Pick<
   "status" | "phase" | "progressCurrent" | "progressTotal" | "pageIndex" | "pageTotal" | "attempt" | "attemptTotal"
 >;
 
+export type ProgressSnapshot =
+  | {
+      mode: "indeterminate";
+    }
+  | {
+      mode: "determinate";
+      current: number;
+      total: number;
+      ratio: number;
+    };
+
 export function formatJobLabel(job: JobWithProgress): string {
   switch (job.phase) {
     case "booting":
@@ -38,7 +49,11 @@ export function formatJobEventLine(event: JobEvent): string {
   return formatJobLabel(event);
 }
 
-export function resolveProgressSnapshot(job: JobWithProgress): { current: number; total: number; ratio: number } | null {
+export function resolveProgressSnapshot(job: JobWithProgress): ProgressSnapshot | null {
+  if (job.phase === "booting" || job.phase === "model_downloading") {
+    return { mode: "indeterminate" };
+  }
+
   if (!Number.isFinite(job.progressCurrent) || !Number.isFinite(job.progressTotal) || (job.progressTotal ?? 0) <= 0) {
     return null;
   }
@@ -46,6 +61,7 @@ export function resolveProgressSnapshot(job: JobWithProgress): { current: number
   const total = Math.max(1, Math.floor(job.progressTotal ?? 0));
   const current = Math.min(total, Math.max(0, Math.floor(job.progressCurrent ?? 0)));
   return {
+    mode: "determinate",
     current,
     total,
     ratio: current / total

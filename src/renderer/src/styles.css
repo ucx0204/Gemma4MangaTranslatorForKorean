@@ -415,7 +415,13 @@ textarea {
   font-size: 12px;
 }
 
+.progress-detail {
+  color: #b8b1a6;
+  font-size: 12px;
+}
+
 .progress-track {
+  position: relative;
   width: 100%;
   height: 10px;
   border-radius: 999px;
@@ -428,6 +434,26 @@ textarea {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #4aa58f 0%, #78c7b2 100%);
+}
+
+.progress-track.indeterminate {
+  background: linear-gradient(90deg, #0f1216 0%, #11161c 100%);
+}
+
+.progress-fill.indeterminate {
+  width: 38%;
+  background: linear-gradient(90deg, rgba(74, 165, 143, 0.12) 0%, #4aa58f 48%, rgba(120, 199, 178, 0.18) 100%);
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(280%);
+  }
 }
 
 .job-pill {
@@ -583,7 +609,7 @@ textarea {
 }
 
 .settings-modal {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
 }
 
 .modal-header {
@@ -674,6 +700,43 @@ textarea {
   text-align: center;
 }
 
+.settings-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.settings-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-test-result {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2f343d;
+  background: #14171b;
+}
+
+.settings-test-result strong,
+.settings-test-result p {
+  margin: 0;
+}
+
+.settings-test-result.success {
+  border-color: #2f6f61;
+  background: rgba(47, 111, 97, 0.18);
+}
+
+.settings-test-result.error {
+  border-color: #8d4949;
+  background: rgba(119, 52, 52, 0.18);
+}
+
 .radio-row,
 .checkbox-row {
   display: flex;
@@ -761,7 +824,8 @@ textarea {
 
   .settings-mode-group,
   .settings-preset-group,
-  .settings-gpu-row {
+  .settings-gpu-row,
+  .settings-file-row {
     grid-template-columns: 1fr;
   }
 }

@@ -31,9 +31,20 @@ describe("job progress helpers", () => {
 
   it("returns a clamped determinate progress snapshot", () => {
     expect(resolveProgressSnapshot({ status: "running", progressCurrent: 21, progressTotal: 20 })).toEqual({
+      mode: "determinate",
       current: 20,
       total: 20,
       ratio: 1
+    });
+  });
+
+  it("uses an indeterminate snapshot while the model is booting or downloading", () => {
+    expect(resolveProgressSnapshot({ status: "starting", phase: "booting" })).toEqual({
+      mode: "indeterminate"
+    });
+
+    expect(resolveProgressSnapshot({ status: "starting", phase: "model_downloading" })).toEqual({
+      mode: "indeterminate"
     });
   });
 

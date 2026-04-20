@@ -95,6 +95,7 @@ export async function runWholePagePipeline({
   const baseOptions = buildBaseOptions(jobId, runPaths.runDir, appSettings, paths);
   const progressTotal = pages.length;
   const modelCached = runtime.simplePage.isModelCached(baseOptions);
+  const localModelSelected = baseOptions.modelSource === "local";
 
   logInfo("Analysis pipeline initialized", {
     jobId,
@@ -108,14 +109,20 @@ export async function runWholePagePipeline({
     id: jobId,
     kind: "gemma-analysis",
     status: "starting",
-    progressText: modelCached ? "Gemma 4 서버 시작 중" : "모델 다운로드/서버 준비 중",
-    phase: modelCached ? "booting" : "model_downloading",
+    progressText: localModelSelected
+      ? "로컬 모델/서버 준비 중"
+      : modelCached
+        ? "Gemma 4 서버 시작 중"
+        : "모델 다운로드/서버 준비 중",
+    phase: localModelSelected || modelCached ? "booting" : "model_downloading",
     progressCurrent: 0,
     progressTotal,
     pageTotal: pages.length,
-    detail: modelCached
-      ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
-      : "로컬 모델 자산이 없거나 부족해 다운로드/갱신이 필요할 수 있습니다."
+    detail: localModelSelected
+      ? "선택한 로컬 모델을 불러오는 중입니다. 큰 모델은 시작까지 시간이 걸릴 수 있습니다."
+      : modelCached
+        ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
+        : "로컬 모델 자산이 없거나 부족해 다운로드/갱신이 필요할 수 있습니다."
   });
 
   const server = await runtime.simplePage.startServer(baseOptions);
