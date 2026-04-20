@@ -21,6 +21,16 @@ export function PageList({
   onReorder
 }: PageListProps): React.JSX.Element {
   const [draggingPageId, setDraggingPageId] = React.useState<string | null>(null);
+  const pageItemRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
+
+  React.useEffect(() => {
+    if (!selectedPageId) {
+      return;
+    }
+    pageItemRefs.current[selectedPageId]?.scrollIntoView({
+      block: "nearest"
+    });
+  }, [selectedPageId]);
 
   return (
     <section className="page-list">
@@ -32,6 +42,9 @@ export function PageList({
           pages.map((page) => (
             <div
               key={page.id}
+              ref={(element) => {
+                pageItemRefs.current[page.id] = element;
+              }}
               className={page.id === selectedPageId ? "page-item active" : "page-item"}
               draggable={!jobActive}
               onDragStart={() => setDraggingPageId(page.id)}

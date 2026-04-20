@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { extname, join } from "node:path";
 import { ensureWritableAppDirectories } from "./appPaths";
@@ -71,6 +71,7 @@ function createWindow(): void {
     minWidth: 1240,
     minHeight: 760,
     backgroundColor: "#101114",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
@@ -93,6 +94,8 @@ function createWindow(): void {
     logError("Renderer failed to load", { errorCode, errorDescription, validatedURL });
   });
 
+  mainWindow.setMenuBarVisibility(false);
+
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
@@ -102,6 +105,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   await cleanupLegacyLogs();
+  Menu.setApplicationMenu(null);
   registerIpc();
   createWindow();
 

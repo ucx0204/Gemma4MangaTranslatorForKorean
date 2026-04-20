@@ -20,6 +20,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { useStageSize } from "./hooks/useStageSize";
 import { markChapterPagesRunning, resolveSelectionAfterChapterSync } from "./lib/chapterSync";
 import { formatJobEventLine, formatJobLabel, resolveProgressSnapshot, summarizeWarnings } from "./lib/jobProgress";
+import { resolveAdjacentPageId, resolveKeyboardPageNavigation } from "./lib/pageNavigation";
 import "./styles.css";
 
 const EMPTY_JOB: JobState = {
@@ -66,6 +67,7 @@ export default function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const workspacePanelRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -277,6 +279,16 @@ export default function App(): React.JSX.Element {
       pushStatus(fallbackStatus);
     }
   }, [pushStatus]);
+
+  const selectPageForReading = useCallback((pageId: string | null) => {
+    if (!pageId) {
+      return;
+    }
+    selectedPageIdRef.current = pageId;
+    selectedBlockIdRef.current = null;
+    setSelectedPageId(pageId);
+    setSelectedBlockId(null);
+  }, []);
 
   const openImportPreview = useCallback(async (mode: "images" | "folder" | "zip" | "zip-folder") => {
     const preview =
@@ -565,6 +577,41 @@ export default function App(): React.JSX.Element {
     dragRef.current = null;
   };
 
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const chapter = currentChapterRef.current;
+      const pageIds = chapter?.pages.map((page) => page.id) ?? [];
+      const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+      const navigation = resolveKeyboardPageNavigation({
+        key: event.key,
+        hasPages: pageIds.length > 0,
+        modalOpen: Boolean(importPreview || renameTarget || settingsOpen),
+        editableTarget: isEditableTarget(event.target),
+        centerPanelFocused: Boolean(workspacePanelRef.current && activeElement && workspacePanelRef.current.contains(activeElement))
+      });
+
+      if (!navigation) {
+        return;
+      }
+
+      const nextPageId = resolveAdjacentPageId(pageIds, selectedPageIdRef.current, navigation.direction);
+      if (!nextPageId) {
+        return;
+      }
+
+      if (navigation.preventDefault) {
+        event.preventDefault();
+      }
+
+      selectPageForReading(nextPageId);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [importPreview, renameTarget, selectPageForReading, settingsOpen]);
+
   const renameWork = useCallback((workId: string) => {
     const work = library.works.find((candidate) => candidate.id === workId);
     if (!work) {
@@ -744,10 +791,7 @@ export default function App(): React.JSX.Element {
           pages={currentChapter?.pages ?? []}
           selectedPageId={selectedPage?.id ?? null}
           jobActive={jobActive}
-          onSelect={(pageId) => {
-            setSelectedPageId(pageId);
-            setSelectedBlockId(null);
-          }}
+          onSelect={selectPageForReading}
           onRetranslate={(pageId) => void retranslatePage(pageId)}
           onRemove={(pageId) => void removePage(pageId)}
           onReorder={(sourcePageId, targetPageId) => {
@@ -763,7 +807,13 @@ export default function App(): React.JSX.Element {
         />
       </aside>
 
-      <section className="workspace">
+      <section
+        ref={workspacePanelRef}
+        className="workspace"
+        tabIndex={0}
+        aria-label="읽기 영역"
+        onMouseDown={() => workspacePanelRef.current?.focus()}
+      >
         {selectedPage ? (
           <div className="workspace-pane">
             <ImageStage
@@ -894,4 +944,16 @@ function reorderByTarget(currentOrder: string[], sourceId: string, targetId: str
   const [item] = next.splice(sourceIndex, 1);
   next.splice(targetIndex, 0, item);
   return next;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (typeof Element === "undefined" || !(target instanceof Element)) {
+    return false;
+  }
+
+  if (target instanceof HTMLElement && target.isContentEditable) {
+    return true;
+  }
+
+  return Boolean(target.closest("input, textarea, select, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']"));
 }

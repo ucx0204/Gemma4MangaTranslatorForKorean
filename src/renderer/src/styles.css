@@ -108,6 +108,7 @@ textarea {
   overflow: auto;
   padding: 24px;
   background: radial-gradient(circle at top, rgba(60, 76, 95, 0.28), transparent 40%), #101114;
+  outline: none;
 }
 
 .toolbar {
@@ -175,6 +176,60 @@ textarea {
   font-size: 13px;
   text-transform: uppercase;
   color: #d6cbbb;
+}
+
+.library-panel-header {
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.library-search-shell {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 260px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid #343941;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #181c22 0%, #14181d 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.library-search-shell:focus-within {
+  border-color: #4f8bb8;
+  background: linear-gradient(180deg, #1a1f26 0%, #151a20 100%);
+  box-shadow:
+    0 0 0 1px rgba(79, 139, 184, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.library-search-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: #95a4b3;
+}
+
+.library-search-input {
+  max-width: none;
+  border: 0;
+  background: transparent;
+  padding: 10px 0;
+  box-shadow: none;
+}
+
+.library-search-input:focus {
+  outline: none;
+}
+
+.library-search-input::placeholder {
+  color: #83909d;
 }
 
 .run-title {
@@ -684,6 +739,20 @@ textarea {
 }
 
 @media (max-width: 640px) {
+  .library-panel-header {
+    flex-wrap: wrap;
+  }
+
+  .library-search-input {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .library-search-shell {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
   .settings-preset-group,
   .settings-gpu-row {
     grid-template-columns: 1fr;
