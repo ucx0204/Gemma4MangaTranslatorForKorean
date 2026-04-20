@@ -739,7 +739,7 @@ export default function App(): React.JSX.Element {
     try {
       const reset = await window.mangaApi.resetSettings();
       setSettings(reset);
-      pushStatus("Gemma 설정을 기본값으로 복원했습니다. 다음 번 번역 실행부터 적용됩니다.");
+      pushStatus("설정을 기본값으로 복원했습니다. 다음 번 번역 실행부터 적용됩니다.");
     } catch (error) {
       console.error(error);
       pushStatus("기본 설정을 복원하지 못했습니다.");

@@ -1,9 +1,32 @@
-import type { AppSettings } from "../shared/types";
+import type { AppSettings, TranslationMode } from "../shared/types";
 
 export const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
 export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
 export const MAX_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_GEMMA_GPU_LAYERS = 30;
+export const DEFAULT_TRANSLATION_MODE: TranslationMode = "fast";
+
+type TranslationModeDefaults = {
+  maxTokens: number;
+  imageMinTokens: number;
+  imageMaxTokens: number;
+  includeEnhancedVariant: boolean;
+};
+
+const TRANSLATION_MODE_DEFAULTS: Record<TranslationMode, TranslationModeDefaults> = {
+  fast: {
+    maxTokens: 900,
+    imageMinTokens: 640,
+    imageMaxTokens: 640,
+    includeEnhancedVariant: false
+  },
+  accuracy: {
+    maxTokens: 1400,
+    imageMinTokens: 1120,
+    imageMaxTokens: 1120,
+    includeEnhancedVariant: true
+  }
+};
 
 export type TranslationOptions = {
   imagePath: string;
@@ -54,6 +77,7 @@ export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env):
       modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, DEFAULT_GEMMA_MODEL_FILE),
       gpuLayers: resolveGpuLayerCount(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
     },
+    translationMode: DEFAULT_TRANSLATION_MODE,
     nsfwMode: false
   };
 }
@@ -67,6 +91,7 @@ export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppS
       modelFile: resolveNonEmptyString(asRecord(gemma)?.modelFile, defaults.gemma.modelFile),
       gpuLayers: resolveGpuLayerCount(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
     },
+    translationMode: resolveTranslationMode(record?.translationMode, defaults.translationMode),
     nsfwMode: resolveBoolean(record?.nsfwMode, defaults.nsfwMode)
   };
 }
@@ -96,6 +121,7 @@ export function buildBaseTranslationOptions({
   settings: AppSettings;
   env?: NodeJS.ProcessEnv;
 }): TranslationOptions {
+  const modeDefaults = resolveTranslationModeDefaults(settings.translationMode);
   return {
     imagePath: "",
     outputDir: runDir,
@@ -105,15 +131,15 @@ export function buildBaseTranslationOptions({
     temperature: readNumberEnv(env, "MANGA_TRANSLATOR_TEMPERATURE", 0),
     topP: readNumberEnv(env, "MANGA_TRANSLATOR_TOP_P", 0.85),
     topK: readNumberEnv(env, "MANGA_TRANSLATOR_TOP_K", 40),
-    maxTokens: readNumberEnv(env, "MANGA_TRANSLATOR_MAX_TOKENS", 1400),
+    maxTokens: readNumberEnv(env, "MANGA_TRANSLATOR_MAX_TOKENS", modeDefaults.maxTokens),
     ctx: readNumberEnv(env, "MANGA_TRANSLATOR_CTX", 16384),
     batch: readNumberEnv(env, "MANGA_TRANSLATOR_BATCH", 32),
     ubatch: readNumberEnv(env, "MANGA_TRANSLATOR_UBATCH", 32),
     gpuLayers: settings.gemma.gpuLayers,
     fitTargetMb: readNumberEnv(env, "MANGA_TRANSLATOR_FIT_TARGET_MB", 4096),
-    imageMinTokens: readNumberEnv(env, "MANGA_TRANSLATOR_IMAGE_MIN_TOKENS", 1120),
-    imageMaxTokens: readNumberEnv(env, "MANGA_TRANSLATOR_IMAGE_MAX_TOKENS", 1120),
-    includeEnhancedVariant: true,
+    imageMinTokens: readNumberEnv(env, "MANGA_TRANSLATOR_IMAGE_MIN_TOKENS", modeDefaults.imageMinTokens),
+    imageMaxTokens: readNumberEnv(env, "MANGA_TRANSLATOR_IMAGE_MAX_TOKENS", modeDefaults.imageMaxTokens),
+    includeEnhancedVariant: modeDefaults.includeEnhancedVariant,
     enhancedMaxLongSide: 1900,
     enhancedContrast: 1.35,
     imageFirst: true,
@@ -132,6 +158,14 @@ export function buildBaseTranslationOptions({
 function readNumberEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const value = Number(env[name]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function resolveTranslationMode(value: unknown, fallback: TranslationMode): TranslationMode {
+  return value === "fast" || value === "accuracy" ? value : fallback;
+}
+
+function resolveTranslationModeDefaults(mode: TranslationMode): TranslationModeDefaults {
+  return TRANSLATION_MODE_DEFAULTS[mode];
 }
 
 function resolveNonEmptyString(value: unknown, fallback: string): string {

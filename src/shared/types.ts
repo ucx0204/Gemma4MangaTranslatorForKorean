@@ -11,8 +11,11 @@ export type GemmaSettings = {
   gpuLayers: number;
 };
 
+export type TranslationMode = "fast" | "accuracy";
+
 export type AppSettings = {
   gemma: GemmaSettings;
+  translationMode: TranslationMode;
   nsfwMode: boolean;
 };
 

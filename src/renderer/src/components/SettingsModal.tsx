@@ -1,5 +1,5 @@
 import React from "react";
-import type { AppSettings } from "../../../shared/types";
+import type { AppSettings, TranslationMode } from "../../../shared/types";
 
 const MAX_GPU_LAYERS = 30;
 const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
@@ -17,6 +17,24 @@ const MODEL_PRESETS = {
 } as const;
 
 type ModelPresetId = keyof typeof MODEL_PRESETS | "custom";
+type TranslationModeOption = {
+  id: TranslationMode;
+  label: string;
+  description: string;
+};
+
+const TRANSLATION_MODE_OPTIONS: TranslationModeOption[] = [
+  {
+    id: "fast",
+    label: "빠름",
+    description: "원본 이미지만 보내고 토큰 예산을 줄여 더 빠르게 처리합니다."
+  },
+  {
+    id: "accuracy",
+    label: "정확성",
+    description: "고대비 보조 이미지를 함께 보내고 더 넉넉한 토큰 예산을 사용합니다."
+  }
+];
 
 type SettingsModalProps = {
   initialSettings: AppSettings;
@@ -41,6 +59,7 @@ export function SettingsModal({
   const [customModelRepo, setCustomModelRepo] = React.useState(initialSettings.gemma.modelRepo);
   const [customModelFile, setCustomModelFile] = React.useState(initialSettings.gemma.modelFile);
   const [gpuLayers, setGpuLayers] = React.useState(String(clampGpuLayers(initialSettings.gemma.gpuLayers)));
+  const [translationMode, setTranslationMode] = React.useState<TranslationMode>(initialSettings.translationMode);
   const [nsfwMode, setNsfwMode] = React.useState(initialSettings.nsfwMode);
   const modelRepoInputRef = React.useRef<HTMLInputElement | null>(null);
   const gpuSliderRef = React.useRef<HTMLInputElement | null>(null);
@@ -50,6 +69,7 @@ export function SettingsModal({
     setCustomModelRepo(initialSettings.gemma.modelRepo);
     setCustomModelFile(initialSettings.gemma.modelFile);
     setGpuLayers(String(clampGpuLayers(initialSettings.gemma.gpuLayers)));
+    setTranslationMode(initialSettings.translationMode);
     setNsfwMode(initialSettings.nsfwMode);
   }, [initialSettings]);
 
@@ -83,6 +103,7 @@ export function SettingsModal({
         modelFile: trimmedModelFile,
         gpuLayers: parsedGpuLayers
       },
+      translationMode,
       nsfwMode
     });
   };
@@ -125,6 +146,26 @@ export function SettingsModal({
 
         <section className="modal-section">
           <p className="muted-line modal-note">다음 번 번역 실행부터 적용됩니다.</p>
+          <div className="settings-field-stack">
+            <span>번역 모드</span>
+            <div className="settings-mode-group" role="tablist" aria-label="번역 모드">
+              {TRANSLATION_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`settings-preset-button ${translationMode === option.id ? "active" : ""}`}
+                  onClick={() => setTranslationMode(option.id)}
+                  disabled={busy}
+                  aria-pressed={translationMode === option.id}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <p className="muted-line modal-note">
+              {TRANSLATION_MODE_OPTIONS.find((option) => option.id === translationMode)?.description}
+            </p>
+          </div>
           <label className="settings-toggle-row">
             NSFW 모드
             <button

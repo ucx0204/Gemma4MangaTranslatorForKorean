@@ -3,6 +3,7 @@ import {
   buildBaseTranslationOptions,
   DEFAULT_GEMMA_GPU_LAYERS,
   DEFAULT_GEMMA_MODEL_FILE,
+  DEFAULT_TRANSLATION_MODE,
   parseStoredAppSettings,
   resolveDefaultAppSettings
 } from "../src/main/appSettings";
@@ -14,6 +15,7 @@ describe("app settings helpers", () => {
 
     expect(defaults.gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE);
     expect(defaults.gemma.gpuLayers).toBe(DEFAULT_GEMMA_GPU_LAYERS);
+    expect(defaults.translationMode).toBe(DEFAULT_TRANSLATION_MODE);
   });
 
   it("fills missing or partial stored settings from environment-based defaults", () => {
@@ -31,6 +33,7 @@ describe("app settings helpers", () => {
         modelFile: "env-default.gguf",
         gpuLayers: 12
       },
+      translationMode: "fast",
       nsfwMode: false
     });
   });
@@ -44,6 +47,7 @@ describe("app settings helpers", () => {
         modelFile: "file.gguf",
         gpuLayers: 30
       },
+      translationMode: "fast",
       nsfwMode: false
     });
 
@@ -53,6 +57,7 @@ describe("app settings helpers", () => {
         modelFile: "file.gguf",
         gpuLayers: 30
       },
+      translationMode: "fast",
       nsfwMode: false
     });
 
@@ -62,6 +67,7 @@ describe("app settings helpers", () => {
         modelFile: "file.gguf",
         gpuLayers: 0
       },
+      translationMode: "fast",
       nsfwMode: false
     });
 
@@ -71,6 +77,7 @@ describe("app settings helpers", () => {
         modelFile: defaults.gemma.modelFile,
         gpuLayers: DEFAULT_GEMMA_GPU_LAYERS
       },
+      translationMode: "fast",
       nsfwMode: false
     });
   });
@@ -80,22 +87,41 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("{\"nsfwMode\":true}", defaults)).toEqual({
       gemma: defaults.gemma,
+      translationMode: "fast",
       nsfwMode: true
     });
 
     expect(parseStoredAppSettings("{\"nsfwMode\":\"off\"}", defaults)).toEqual({
       gemma: defaults.gemma,
+      translationMode: "fast",
       nsfwMode: false
     });
   });
 
-  it("builds base translation options from saved model settings while preserving other defaults", () => {
+  it("fills invalid or missing translation mode with the default", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(parseStoredAppSettings("{\"translationMode\":\"accuracy\"}", defaults)).toEqual({
+      gemma: defaults.gemma,
+      translationMode: "accuracy",
+      nsfwMode: false
+    });
+
+    expect(parseStoredAppSettings("{\"translationMode\":\"turbo\"}", defaults)).toEqual({
+      gemma: defaults.gemma,
+      translationMode: "fast",
+      nsfwMode: false
+    });
+  });
+
+  it("builds fast mode translation options from saved model settings while preserving other defaults", () => {
     const settings: AppSettings = {
       gemma: {
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
       },
+      translationMode: "fast",
       nsfwMode: true
     };
 
@@ -123,10 +149,42 @@ describe("app settings helpers", () => {
     expect(options.nsfwMode).toBe(true);
     expect(options.temperature).toBe(0.2);
     expect(options.ctx).toBe(8192);
+    expect(options.maxTokens).toBe(900);
+    expect(options.imageMinTokens).toBe(640);
+    expect(options.imageMaxTokens).toBe(640);
+    expect(options.includeEnhancedVariant).toBe(false);
     expect(options.topP).toBe(0.85);
     expect(options.fitTargetMb).toBe(4096);
     expect(options.workingDir).toBe("C:/app-data");
     expect(options.outputDir).toBe("C:/runs/job-1");
     expect(options.label).toBe("app-job-1");
+  });
+
+  it("builds accuracy mode translation options with the previous larger image budget", () => {
+    const settings: AppSettings = {
+      gemma: {
+        modelRepo: "saved/repo",
+        modelFile: "saved-model.gguf",
+        gpuLayers: 24
+      },
+      translationMode: "accuracy",
+      nsfwMode: false
+    };
+
+    const options = buildBaseTranslationOptions({
+      jobId: "job-2",
+      runDir: "C:/runs/job-2",
+      paths: {
+        dataRoot: "C:/app-data",
+        toolsDir: "C:/tools",
+        llamaServerPath: "C:/tools/llama-server.exe"
+      },
+      settings
+    });
+
+    expect(options.maxTokens).toBe(1400);
+    expect(options.imageMinTokens).toBe(1120);
+    expect(options.imageMaxTokens).toBe(1120);
+    expect(options.includeEnhancedVariant).toBe(true);
   });
 });

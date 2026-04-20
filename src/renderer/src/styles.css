@@ -634,6 +634,12 @@ textarea {
   color: #e6ddcf;
 }
 
+.settings-mode-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .settings-preset-group {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -753,6 +759,7 @@ textarea {
     flex-basis: 100%;
   }
 
+  .settings-mode-group,
   .settings-preset-group,
   .settings-gpu-row {
     grid-template-columns: 1fr;
