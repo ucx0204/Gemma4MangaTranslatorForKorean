@@ -31,8 +31,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download bundled llama runtime
+        shell: pwsh
+        run: |
+          $runtimeDir = Join-Path $PWD "tools/llama-b8833-cuda12.4"
+          $binZip = Join-Path $env:RUNNER_TEMP "llama-b8833-bin-win-cuda-12.4-x64.zip"
+          $cudaZip = Join-Path $env:RUNNER_TEMP "cudart-llama-bin-win-cuda-12.4-x64.zip"
+
+          New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/llama.cpp/releases/download/b8833/llama-b8833-bin-win-cuda-12.4-x64.zip" -OutFile $binZip
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/llama.cpp/releases/download/b8833/cudart-llama-bin-win-cuda-12.4-x64.zip" -OutFile $cudaZip
+          Expand-Archive -Path $binZip -DestinationPath $runtimeDir -Force
+          Expand-Archive -Path $cudaZip -DestinationPath $runtimeDir -Force
+
       - name: Build Windows release
-        run: npm run dist:win
+        run: npm run build && npx electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never
 
       - name: Resolve release metadata
         id: release_meta
