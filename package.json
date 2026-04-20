@@ -1,6 +1,6 @@
 {
   "name": "manga-gemma-translator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Thin desktop manga translation overlay editor powered by whole-page Gemma 4 OCR and bbox overlays.",
   "type": "commonjs",
   "main": "out/main/bootstrap.js",

@@ -10,7 +10,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { nativeImage } from "electron";
 import type {
   ChapterSnapshot,
@@ -313,18 +313,40 @@ export async function previewZipFolder(folderPath: string): Promise<ImportPrevie
   const zipPaths = sortNaturally(
     entries.filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".zip").map((entry) => join(folderPath, entry.name))
   );
-
-  const chapters: ImportChapterDraft[] = zipPaths.map((zipPath) => ({
-    draftId: randomUUID(),
-    title: basename(zipPath, extname(zipPath)),
-    sourceKind: "zip-folder",
-    pages: listImageEntriesInZip(zipPath).map((entry) => ({
-      name: normalizeImportPageName(entry.entryName),
-      sourceKind: "zip-entry" as const,
-      sourcePath: zipPath,
-      zipEntryName: entry.entryName
-    }))
-  }));
+  const imageFolderPaths = await listNestedImageFolders(folderPath);
+  const chapters = [
+    ...zipPaths.map((zipPath) => ({
+      sortKey: relative(folderPath, zipPath),
+      chapter: {
+        draftId: randomUUID(),
+        title: basename(zipPath, extname(zipPath)),
+        sourceKind: "zip-folder" as const,
+        pages: listImageEntriesInZip(zipPath).map((entry) => ({
+          name: normalizeImportPageName(entry.entryName),
+          sourceKind: "zip-entry" as const,
+          sourcePath: zipPath,
+          zipEntryName: entry.entryName
+        }))
+      }
+    })),
+    ...(await Promise.all(
+      imageFolderPaths.map(async (imageFolderPath) => ({
+        sortKey: relative(folderPath, imageFolderPath),
+        chapter: {
+          draftId: randomUUID(),
+          title: normalizeImportPageName(relative(folderPath, imageFolderPath)) || basename(imageFolderPath),
+          sourceKind: "folder" as const,
+          pages: (await listImageFiles(imageFolderPath)).map((filePath) => ({
+            name: basename(filePath),
+            sourceKind: "file" as const,
+            sourcePath: filePath
+          }))
+        }
+      }))
+    ))
+  ]
+    .sort((left, right) => left.sortKey.localeCompare(right.sortKey, undefined, { numeric: true, sensitivity: "base" }))
+    .map(({ chapter }) => chapter);
 
   return {
     mode: "batch",
@@ -727,6 +749,26 @@ async function listImageFiles(folderPath: string): Promise<string[]> {
   return sortNaturally(
     entries.filter((entry) => entry.isFile() && isSupportedImagePath(entry.name)).map((entry) => join(folderPath, entry.name))
   );
+}
+
+async function listNestedImageFolders(rootPath: string): Promise<string[]> {
+  const found: string[] = [];
+
+  async function walk(currentPath: string): Promise<void> {
+    const entries = await readdir(currentPath, { withFileTypes: true });
+    const childDirectories = sortNaturally(entries.filter((entry) => entry.isDirectory()).map((entry) => join(currentPath, entry.name)));
+
+    if (currentPath !== rootPath && entries.some((entry) => entry.isFile() && isSupportedImagePath(entry.name))) {
+      found.push(currentPath);
+    }
+
+    for (const childPath of childDirectories) {
+      await walk(childPath);
+    }
+  }
+
+  await walk(rootPath);
+  return found;
 }
 
 function listImageEntriesInZip(zipPath: string): ZipEntryLike[] {
