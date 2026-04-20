@@ -606,6 +606,10 @@ textarea {
   gap: 10px;
 }
 
+.modal-danger {
+  margin-right: auto;
+}
+
 .settings-actions {
   justify-content: space-between;
 }

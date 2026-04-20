@@ -137,6 +137,52 @@ export async function renameChapter(chapterId: string, title: string): Promise<L
   return listLibrary();
 }
 
+export async function deleteWork(workId: string): Promise<LibraryIndex> {
+  const work = await readWorkFile(workId);
+  if (!work) {
+    throw new Error("작품을 찾지 못했습니다.");
+  }
+
+  const index = await readIndexFile();
+  index.workOrder = index.workOrder.filter((id) => id !== workId);
+  await writeIndexFile(index);
+
+  const workDir = join(WORKS_ROOT, workId);
+  if (existsSync(workDir)) {
+    await rm(workDir, { recursive: true, force: true });
+  }
+
+  return listLibrary();
+}
+
+export async function deleteChapter(chapterId: string): Promise<LibraryIndex> {
+  const locator = await findChapterLocation(chapterId);
+  if (!locator) {
+    throw new Error("화를 찾지 못했습니다.");
+  }
+
+  const work = await readWorkFile(locator.workId);
+  if (!work) {
+    throw new Error("작품을 찾지 못했습니다.");
+  }
+
+  const chapter = await readChapterFile(locator.workId, locator.chapterId);
+  if (!chapter) {
+    throw new Error("화를 찾지 못했습니다.");
+  }
+
+  work.chapterOrder = work.chapterOrder.filter((id) => id !== chapter.id);
+  work.updatedAt = new Date().toISOString();
+  await writeWorkFile(work);
+
+  const chapterDir = join(WORKS_ROOT, locator.workId, "chapters", locator.chapterId);
+  if (existsSync(chapterDir)) {
+    await rm(chapterDir, { recursive: true, force: true });
+  }
+
+  return listLibrary();
+}
+
 export async function reorderChapters(workId: string, chapterIds: string[]): Promise<LibraryIndex> {
   const work = await readWorkFile(workId);
   if (!work) {

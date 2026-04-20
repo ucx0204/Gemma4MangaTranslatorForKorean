@@ -4,6 +4,8 @@ import { extname, join } from "node:path";
 import { ensureWritableAppDirectories } from "./appPaths";
 import {
   cleanupLegacyLogs,
+  deleteChapter,
+  deleteWork,
   createImport,
   deletePage,
   finalizeRunningPages,
@@ -164,6 +166,8 @@ function registerIpc(): void {
   ipcMain.handle("library:save-chapter", async (_event, chapter) => saveChapterSnapshot(chapter));
   ipcMain.handle("library:rename-work", async (_event, workId: string, title: string) => renameWork(workId, title));
   ipcMain.handle("library:rename-chapter", async (_event, chapterId: string, title: string) => renameChapter(chapterId, title));
+  ipcMain.handle("library:delete-work", async (_event, workId: string) => deleteWork(workId));
+  ipcMain.handle("library:delete-chapter", async (_event, chapterId: string) => deleteChapter(chapterId));
   ipcMain.handle("library:reorder-chapters", async (_event, workId: string, chapterIds: string[]) => reorderChapters(workId, chapterIds));
   ipcMain.handle("library:reorder-pages", async (_event, chapterId: string, pageIds: string[]) => reorderPages(chapterId, pageIds));
   ipcMain.handle("library:delete-page", async (_event, chapterId: string, pageId: string) => deletePage(chapterId, pageId));

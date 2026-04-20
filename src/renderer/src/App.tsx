@@ -240,6 +240,17 @@ export default function App(): React.JSX.Element {
     setDirty(false);
   }, [currentChapter]);
 
+  const clearCurrentChapter = useCallback(() => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setCurrentChapter(null);
+    setSelectedPageId(null);
+    setSelectedBlockId(null);
+    setDirty(false);
+  }, []);
+
   const openChapter = useCallback(
     async (chapterId: string) => {
       if (dirty) {
@@ -596,6 +607,53 @@ export default function App(): React.JSX.Element {
     }
   }, [applyChapter, currentChapter, dirty, renameTarget, saveNow]);
 
+  const deleteRenameTarget = useCallback(async () => {
+    if (!renameTarget) {
+      return;
+    }
+
+    const isCurrentChapter = currentChapter?.id === renameTarget.id;
+    const isCurrentWork = renameTarget.kind === "work" && currentChapter?.workId === renameTarget.id;
+    const confirmed = await window.mangaApi.confirm(
+      renameTarget.kind === "work" ? "작품 삭제" : "화 삭제",
+      "정말 삭제하시겠습니까?",
+      renameTarget.kind === "work"
+        ? `"${renameTarget.title}" 작품과 포함된 모든 화, 페이지, 번역 결과가 보관함에서 삭제됩니다.`
+        : `"${renameTarget.title}" 화와 포함된 모든 페이지, 번역 결과가 보관함에서 삭제됩니다.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setRenameBusy(true);
+    try {
+      if ((isCurrentChapter || isCurrentWork) && dirty) {
+        await saveNow();
+      }
+
+      if (renameTarget.kind === "work") {
+        setLibrary(await window.mangaApi.deleteWork(renameTarget.id));
+        if (isCurrentWork) {
+          clearCurrentChapter();
+        }
+        pushStatus(`${renameTarget.title} 작품을 삭제했습니다.`);
+      } else {
+        setLibrary(await window.mangaApi.deleteChapter(renameTarget.id));
+        if (isCurrentChapter) {
+          clearCurrentChapter();
+        }
+        pushStatus(`${renameTarget.title} 화를 삭제했습니다.`);
+      }
+
+      setRenameTarget(null);
+    } catch (error) {
+      console.error(error);
+      pushStatus(renameTarget.kind === "work" ? "작품을 삭제하지 못했습니다." : "화를 삭제하지 못했습니다.");
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [clearCurrentChapter, currentChapter?.id, currentChapter?.workId, dirty, pushStatus, renameTarget, saveNow]);
+
   const openSettings = useCallback(async () => {
     if (settings) {
       setSettingsOpen(true);
@@ -801,6 +859,7 @@ export default function App(): React.JSX.Element {
               setRenameTarget(null);
             }
           }}
+          onDelete={() => void deleteRenameTarget()}
           onSubmit={(title) => void submitRename(title)}
         />
       ) : null}
