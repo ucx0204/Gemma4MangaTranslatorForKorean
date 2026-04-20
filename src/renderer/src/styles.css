@@ -570,6 +570,49 @@ textarea {
   color: #fff4ea;
 }
 
+.settings-field-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-field-stack > span {
+  color: #e6ddcf;
+}
+
+.settings-preset-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-preset-button {
+  width: 100%;
+}
+
+.settings-preset-button.active {
+  background: #2f6f61;
+  border-color: #4aa58f;
+}
+
+.settings-gpu-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px;
+  gap: 12px;
+  align-items: center;
+}
+
+.settings-gpu-slider {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: #4aa58f;
+}
+
+.settings-gpu-input {
+  text-align: center;
+}
+
 .radio-row,
 .checkbox-row {
   display: flex;
@@ -637,5 +680,12 @@ textarea {
 
   .workspace {
     min-height: 480px;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-preset-group,
+  .settings-gpu-row {
+    grid-template-columns: 1fr;
   }
 }

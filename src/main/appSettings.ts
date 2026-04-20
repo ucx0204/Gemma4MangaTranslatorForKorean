@@ -1,8 +1,9 @@
 import type { AppSettings } from "../shared/types";
 
 export const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
-export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
-export const DEFAULT_GEMMA_GPU_LAYERS = 16;
+export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
+export const MAX_GEMMA_GPU_LAYERS = 30;
+export const DEFAULT_GEMMA_GPU_LAYERS = 30;
 
 export type TranslationOptions = {
   imagePath: string;
@@ -51,7 +52,7 @@ export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env):
     gemma: {
       modelRepo: resolveNonEmptyString(env.MANGA_TRANSLATOR_MODEL_HF, DEFAULT_GEMMA_MODEL_REPO),
       modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, DEFAULT_GEMMA_MODEL_FILE),
-      gpuLayers: resolveNonNegativeInteger(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
+      gpuLayers: resolveGpuLayerCount(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
     },
     nsfwMode: false
   };
@@ -64,7 +65,7 @@ export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppS
     gemma: {
       modelRepo: resolveNonEmptyString(asRecord(gemma)?.modelRepo, defaults.gemma.modelRepo),
       modelFile: resolveNonEmptyString(asRecord(gemma)?.modelFile, defaults.gemma.modelFile),
-      gpuLayers: resolveNonNegativeInteger(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
+      gpuLayers: resolveGpuLayerCount(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
     },
     nsfwMode: resolveBoolean(record?.nsfwMode, defaults.nsfwMode)
   };
@@ -137,9 +138,16 @@ function resolveNonEmptyString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function resolveNonNegativeInteger(value: unknown, fallback: number): number {
+function resolveGpuLayerCount(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return clampInteger(parsed, 0, MAX_GEMMA_GPU_LAYERS);
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function resolveBoolean(value: unknown, fallback: boolean): boolean {

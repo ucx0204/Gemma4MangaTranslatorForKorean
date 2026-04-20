@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { buildBaseTranslationOptions, parseStoredAppSettings, resolveDefaultAppSettings } from "../src/main/appSettings";
+import {
+  buildBaseTranslationOptions,
+  DEFAULT_GEMMA_GPU_LAYERS,
+  DEFAULT_GEMMA_MODEL_FILE,
+  parseStoredAppSettings,
+  resolveDefaultAppSettings
+} from "../src/main/appSettings";
 import type { AppSettings } from "../src/shared/types";
 
 describe("app settings helpers", () => {
+  it("uses Q4_K_XL and 30 as built-in defaults", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(defaults.gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE);
+    expect(defaults.gemma.gpuLayers).toBe(DEFAULT_GEMMA_GPU_LAYERS);
+  });
+
   it("fills missing or partial stored settings from environment-based defaults", () => {
     const env = {
       MANGA_TRANSLATOR_MODEL_HF: "env/default-repo",
@@ -22,16 +35,32 @@ describe("app settings helpers", () => {
     });
   });
 
-  it("normalizes invalid stored gpu layers back to defaults", () => {
-    const defaults = resolveDefaultAppSettings({
-      MANGA_TRANSLATOR_GPU_LAYERS: "9"
-    } satisfies NodeJS.ProcessEnv);
+  it("clamps out-of-range stored gpu layers and falls back on invalid values", () => {
+    const defaults = resolveDefaultAppSettings();
 
-    expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":-3}}", defaults)).toEqual({
+    expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":31}}", defaults)).toEqual({
       gemma: {
         modelRepo: "repo",
         modelFile: "file.gguf",
-        gpuLayers: 9
+        gpuLayers: 30
+      },
+      nsfwMode: false
+    });
+
+    expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":99}}", defaults)).toEqual({
+      gemma: {
+        modelRepo: "repo",
+        modelFile: "file.gguf",
+        gpuLayers: 30
+      },
+      nsfwMode: false
+    });
+
+    expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":-1}}", defaults)).toEqual({
+      gemma: {
+        modelRepo: "repo",
+        modelFile: "file.gguf",
+        gpuLayers: 0
       },
       nsfwMode: false
     });
@@ -40,7 +69,7 @@ describe("app settings helpers", () => {
       gemma: {
         modelRepo: defaults.gemma.modelRepo,
         modelFile: defaults.gemma.modelFile,
-        gpuLayers: 9
+        gpuLayers: DEFAULT_GEMMA_GPU_LAYERS
       },
       nsfwMode: false
     });
