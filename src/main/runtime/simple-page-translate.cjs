@@ -8,6 +8,8 @@ const { resolveBundledServerPath } = require("./resolve-llama-runtime.cjs");
 
 const DEFAULT_MODEL_HF = "unsloth/gemma-4-26B-A4B-it-GGUF";
 const DEFAULT_HF_FILE = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
+const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const DEFAULT_CODEX_REASONING_EFFORT = "medium";
 const DEFAULT_API_KEY = "local-llama-server";
 const MAX_LOG_PREVIEW_LENGTH = 8000;
 const MM_PROJ_CANDIDATE_NAMES = ["mmproj-BF16.gguf", "mmproj-F16.gguf", "mmproj-F32.gguf", "mmproj.gguf"];
@@ -35,6 +37,7 @@ function buildOptionSummary(options = {}) {
     label: options.label,
     imagePath: options.imagePath,
     outputDir: options.outputDir,
+    modelProvider: resolveModelProvider(options),
     port: options.port,
     promptMode: options.promptMode,
     nsfwMode: Boolean(options.nsfwMode),
@@ -62,6 +65,9 @@ function buildOptionSummary(options = {}) {
     modelFile: options.modelFile,
     localModelPath: resolveConfiguredLocalModelPath(options),
     localMmprojPath: resolveConfiguredLocalMmprojPath(options),
+    codexModel: resolveConfiguredCodexModel(options),
+    codexReasoningEffort: resolveConfiguredCodexReasoningEffort(options),
+    codexOauthPort: options.codexOauthPort,
     launchMode: launchTarget.launchMode,
     hfHomeDir: resolveHfHomeDir(options),
     hfHubCacheDir: resolveHubCacheDir(options)
@@ -79,7 +85,7 @@ function summarizeImageVariants(imageVariants) {
 
 function buildRequestSummary(server, options, imageVariants, promptText, systemPrompt) {
   return {
-    endpoint: `${server.baseUrl}/chat/completions`,
+    endpoint: `${server.baseUrl}/${isOpenAICodexProvider(options) ? "responses" : "chat/completions"}`,
     model: resolveRequestModelName(options),
     label: options.label,
     promptMode: options.promptMode,
@@ -307,6 +313,30 @@ function resolveConfiguredModelSource(options = {}) {
   return String(options.modelSource ?? "").trim() === "local" ? "local" : "huggingface";
 }
 
+function resolveModelProvider(options = {}) {
+  return String(options.modelProvider ?? "").trim() === "openai-codex" ? "openai-codex" : "gemma";
+}
+
+function isOpenAICodexProvider(options = {}) {
+  return resolveModelProvider(options) === "openai-codex";
+}
+
+function resolveProviderDisplayName(options = {}) {
+  return isOpenAICodexProvider(options) ? "OpenAI Codex" : "Gemma";
+}
+
+function resolveConfiguredCodexModel(options = {}) {
+  return String(options.codexModel ?? process.env.MANGA_TRANSLATOR_CODEX_MODEL ?? "").trim() || DEFAULT_CODEX_MODEL;
+}
+
+function resolveConfiguredCodexReasoningEffort(options = {}) {
+  const value = String(options.codexReasoningEffort ?? process.env.MANGA_TRANSLATOR_CODEX_REASONING_EFFORT ?? "").trim();
+  if (value === "minimal") {
+    return "low";
+  }
+  return ["none", "low", "medium", "high", "xhigh"].includes(value) ? value : DEFAULT_CODEX_REASONING_EFFORT;
+}
+
 function resolveConfiguredLocalModelPath(options = {}) {
   const value = String(options.localModelPath ?? "").trim();
   return value ? path.resolve(value) : null;
@@ -387,6 +417,15 @@ function resolveCachedModelAssets(options = {}) {
 }
 
 function inspectModelLaunch(options = {}) {
+  if (isOpenAICodexProvider(options)) {
+    return {
+      launchMode: "openai-codex",
+      model: resolveConfiguredCodexModel(options),
+      reasoningEffort: resolveConfiguredCodexReasoningEffort(options),
+      requiresDownload: false
+    };
+  }
+
   if (resolveConfiguredModelSource(options) === "local") {
     const modelPath = resolveConfiguredLocalModelPath(options);
     const explicitMmprojPath = resolveConfiguredLocalMmprojPath(options);
@@ -410,6 +449,9 @@ function inspectModelLaunch(options = {}) {
 
 function isModelCached(options = {}) {
   const launchTarget = inspectModelLaunch(options);
+  if (launchTarget.launchMode === "openai-codex") {
+    return true;
+  }
   if (launchTarget.launchMode === "local") {
     return Boolean(launchTarget.modelPath && existsSync(launchTarget.modelPath));
   }
@@ -847,6 +889,29 @@ function buildMessages(options, imageVariants) {
   ];
 }
 
+function buildResponsesInput(options, imageVariants) {
+  const promptText = options.promptOverrideText || PROMPT_KO_BBOX_LINES_MULTIVIEW;
+  const content = imageVariants.flatMap((variant, index) => ([
+    {
+      type: "input_text",
+      text: variant.role === "enhanced"
+        ? `Image ${index + 1}: the same full manga page rendered as grayscale/high-contrast assist view.`
+        : `Image ${index + 1}: the original full manga page.`
+    },
+    {
+      type: "input_image",
+      image_url: variant.dataUrl
+    }
+  ]));
+
+  return [
+    {
+      role: "user",
+      content: [...content, { type: "input_text", text: promptText }]
+    }
+  ];
+}
+
 function resolveConfiguredModelRepo(options = {}) {
   return String(options.modelRepo ?? process.env.MANGA_TRANSLATOR_MODEL_HF ?? "").trim() || DEFAULT_MODEL_HF;
 }
@@ -856,11 +921,61 @@ function resolveConfiguredModelFile(options = {}) {
 }
 
 function resolveRequestModelName(options = {}) {
+  if (isOpenAICodexProvider(options)) {
+    return resolveConfiguredCodexModel(options);
+  }
   const launchTarget = inspectModelLaunch(options);
   if (launchTarget.launchMode === "local" && launchTarget.modelPath) {
     return path.basename(launchTarget.modelPath);
   }
   return resolveConfiguredModelRepo(options);
+}
+
+function buildChatRequestHeaders(options = {}) {
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (!isOpenAICodexProvider(options)) {
+    headers.Authorization = `Bearer ${DEFAULT_API_KEY}`;
+  }
+  return headers;
+}
+
+function buildChatRequestBody(options, messages, maxTokens = options.maxTokens) {
+  if (isOpenAICodexProvider(options)) {
+    return {
+      model: resolveRequestModelName(options),
+      max_tokens: maxTokens,
+      reasoning_effort: resolveConfiguredCodexReasoningEffort(options),
+      messages
+    };
+  }
+
+  return {
+    model: resolveRequestModelName(options),
+    temperature: options.temperature,
+    top_p: options.topP,
+    top_k: options.topK,
+    presence_penalty: 0,
+    frequency_penalty: 0,
+    max_tokens: maxTokens,
+    reasoning_budget: 0,
+    enable_thinking: false,
+    messages
+  };
+}
+
+function buildResponsesRequestBody(options, imageVariants) {
+  return {
+    model: resolveRequestModelName(options),
+    instructions: buildSystemPrompt(options),
+    input: buildResponsesInput(options, imageVariants),
+    reasoning: {
+      effort: resolveConfiguredCodexReasoningEffort(options)
+    },
+    stream: true,
+    store: false
+  };
 }
 
 function buildLaunchArgs(options) {
@@ -1085,21 +1200,11 @@ async function stopServer(server) {
 async function requestTranslation(server, options) {
   const preparedVariants = await prepareImageVariants(options);
   const imageVariants = preparedVariants.imageVariants;
-  const messages = buildMessages(options, imageVariants);
   const promptText = options.promptOverrideText || PROMPT_KO_BBOX_LINES_MULTIVIEW;
   const systemPrompt = buildSystemPrompt(options);
-  const requestBody = {
-    model: resolveRequestModelName(options),
-    temperature: options.temperature,
-    top_p: options.topP,
-    top_k: options.topK,
-    presence_penalty: 0,
-    frequency_penalty: 0,
-    max_tokens: options.maxTokens,
-    reasoning_budget: 0,
-    enable_thinking: false,
-    messages
-  };
+  const requestBody = isOpenAICodexProvider(options)
+    ? buildResponsesRequestBody(options, imageVariants)
+    : buildChatRequestBody(options, buildMessages(options, imageVariants));
   const requestSummary = buildRequestSummary(server, options, imageVariants, promptText, systemPrompt);
   if (preparedVariants.diagnostics.length > 0) {
     requestSummary.imageVariantDiagnostics = preparedVariants.diagnostics;
@@ -1107,36 +1212,40 @@ async function requestTranslation(server, options) {
 
   let response;
   try {
-    response = await fetch(`${server.baseUrl}/chat/completions`, {
+    response = await fetch(`${server.baseUrl}/${isOpenAICodexProvider(options) ? "responses" : "chat/completions"}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DEFAULT_API_KEY}`
-      },
+      headers: buildChatRequestHeaders(options),
       body: JSON.stringify(requestBody),
       signal: options.abortSignal
     });
   } catch (error) {
-    throw createDetailedError("Gemma request transport failed.", { requestSummary }, error);
+    throw createDetailedError(`${resolveProviderDisplayName(options)} request transport failed.`, { requestSummary }, error);
+  }
+
+  if (isOpenAICodexProvider(options)) {
+    if (!response.ok) {
+      const rawText = await readResponseText(response, requestSummary, options);
+      throw createDetailedError(`${resolveProviderDisplayName(options)} request failed (${response.status}).`, {
+        requestSummary,
+        status: response.status,
+        statusText: response.statusText,
+        rawTextPreview: truncateText(rawText, 4000)
+      });
+    }
+
+    const streamResult = await readCodexResponsesStream(response, requestSummary, options);
+    return {
+      requestBody: requestSummary,
+      rawResponse: streamResult.rawResponse,
+      outputText: streamResult.outputText
+    };
   }
 
   let rawText = "";
-  try {
-    rawText = await response.text();
-  } catch (error) {
-    throw createDetailedError(
-      "Failed to read Gemma response body.",
-      {
-        requestSummary,
-        status: response.status,
-        statusText: response.statusText
-      },
-      error
-    );
-  }
+  rawText = await readResponseText(response, requestSummary, options);
 
   if (!response.ok) {
-    throw createDetailedError(`Gemma request failed (${response.status}).`, {
+    throw createDetailedError(`${resolveProviderDisplayName(options)} request failed (${response.status}).`, {
       requestSummary,
       status: response.status,
       statusText: response.statusText,
@@ -1149,7 +1258,7 @@ async function requestTranslation(server, options) {
     parsed = JSON.parse(rawText);
   } catch (error) {
     throw createDetailedError(
-      "Gemma response JSON parse failed.",
+      `${resolveProviderDisplayName(options)} response JSON parse failed.`,
       {
         requestSummary,
         rawTextPreview: truncateText(rawText, 4000)
@@ -1158,12 +1267,7 @@ async function requestTranslation(server, options) {
     );
   }
 
-  const content = parsed?.choices?.[0]?.message?.content;
-  const outputText = typeof content === "string"
-    ? content
-      : Array.isArray(content)
-        ? content.map((item) => item?.text || "").join("\n").trim()
-        : "";
+  const outputText = extractModelOutputText(parsed);
 
   if (!outputText.trim()) {
     throw createDetailedError("Model returned an empty response.", {
@@ -1179,37 +1283,154 @@ async function requestTranslation(server, options) {
   };
 }
 
-async function testModelReply(server, options) {
-  const requestBody = {
-    model: resolveRequestModelName(options),
-    temperature: 0,
-    top_p: 1,
-    top_k: 40,
-    presence_penalty: 0,
-    frequency_penalty: 0,
-    max_tokens: 48,
-    reasoning_budget: 0,
-    enable_thinking: false,
-    messages: [
+async function readResponseText(response, requestSummary, options) {
+  try {
+    return await response.text();
+  } catch (error) {
+    throw createDetailedError(
+      `Failed to read ${resolveProviderDisplayName(options)} response body.`,
       {
-        role: "system",
-        content: [{ type: "text", text: "Reply in one short sentence." }]
+        requestSummary,
+        status: response.status,
+        statusText: response.statusText
       },
-      {
-        role: "user",
-        content: [{ type: "text", text: "Say 'model test ok'." }]
-      }
-    ]
+      error
+    );
+  }
+}
+
+async function readCodexResponsesStream(response, requestSummary, options) {
+  const rawText = await readResponseText(response, requestSummary, options);
+  const parsed = parseResponsesSseText(rawText);
+  const outputText = parsed.outputText.trim();
+  if (!outputText) {
+    throw createDetailedError("Model returned an empty response.", {
+      requestSummary,
+      rawTextPreview: truncateText(rawText, 4000),
+      rawResponse: parsed.rawResponse
+    });
+  }
+
+  return {
+    outputText,
+    rawResponse: {
+      ...parsed.rawResponse,
+      output_text: outputText,
+      streamEventCount: parsed.eventCount
+    }
   };
+}
+
+function parseResponsesSseText(rawText) {
+  const deltas = [];
+  let rawResponse = null;
+  let eventCount = 0;
+
+  for (const block of rawText.split(/\r?\n\r?\n/)) {
+    const dataLines = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (dataLines.length === 0) {
+      continue;
+    }
+
+    const data = dataLines.join("\n");
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    eventCount += 1;
+
+    if (parsed?.type === "response.output_text.delta" && typeof parsed.delta === "string") {
+      deltas.push(parsed.delta);
+      continue;
+    }
+
+    if ((parsed?.type === "response.completed" || parsed?.type === "response.incomplete") && parsed.response) {
+      rawResponse = parsed.response;
+      continue;
+    }
+
+    const nestedOutput = extractModelOutputText(parsed);
+    if (nestedOutput) {
+      deltas.push(nestedOutput);
+    }
+  }
+
+  return {
+    outputText: deltas.join(""),
+    rawResponse,
+    eventCount
+  };
+}
+
+function extractModelOutputText(parsed) {
+  if (typeof parsed?.output_text === "string") {
+    return parsed.output_text.trim();
+  }
+
+  const chatContent = parsed?.choices?.[0]?.message?.content;
+  if (typeof chatContent === "string") {
+    return chatContent.trim();
+  }
+  if (Array.isArray(chatContent)) {
+    return chatContent.map((item) => item?.text || "").join("\n").trim();
+  }
+
+  if (!Array.isArray(parsed?.output)) {
+    return "";
+  }
+
+  const parts = [];
+  for (const item of parsed.output) {
+    if (typeof item?.content === "string") {
+      parts.push(item.content);
+      continue;
+    }
+    if (!Array.isArray(item?.content)) {
+      continue;
+    }
+    for (const content of item.content) {
+      if (typeof content?.text === "string") {
+        parts.push(content.text);
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+async function testModelReply(server, options) {
+  if (isOpenAICodexProvider(options)) {
+    return testCodexResponsesReply(server, options);
+  }
+
+  const messages = [
+    {
+      role: "system",
+      content: [{ type: "text", text: "Reply in one short sentence." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "text", text: "Say 'model test ok'." }]
+    }
+  ];
+  const requestBody = buildChatRequestBody(options, messages, 48);
 
   let response;
   try {
     response = await fetch(`${server.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DEFAULT_API_KEY}`
-      },
+      headers: buildChatRequestHeaders(options),
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(30000)
     });
@@ -1259,6 +1480,54 @@ async function testModelReply(server, options) {
   };
 }
 
+async function testCodexResponsesReply(server, options) {
+  const requestBody = {
+    model: resolveRequestModelName(options),
+    instructions: "Reply in one short sentence.",
+    input: [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "Say 'model test ok'." }]
+      }
+    ],
+    reasoning: {
+      effort: resolveConfiguredCodexReasoningEffort(options)
+    },
+    stream: true,
+    store: false
+  };
+
+  let response;
+  try {
+    response = await fetch(`${server.baseUrl}/responses`, {
+      method: "POST",
+      headers: buildChatRequestHeaders(options),
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    throw createDetailedError("모델 테스트 요청을 보내지 못했습니다.", {
+      requestBody
+    }, error);
+  }
+
+  if (!response.ok) {
+    const rawText = await readResponseText(response, {}, options);
+    throw createDetailedError(`모델 테스트 응답이 실패했습니다 (${response.status}).`, {
+      status: response.status,
+      statusText: response.statusText,
+      rawTextPreview: truncateText(rawText, 4000)
+    });
+  }
+
+  const result = await readCodexResponsesStream(response, {}, options);
+
+  return {
+    outputText: result.outputText,
+    launchTarget: inspectModelLaunch(options)
+  };
+}
+
 async function saveArtifacts(options, result) {
   await mkdir(options.outputDir, { recursive: true });
   const systemPrompt = buildSystemPrompt(options);
@@ -1276,11 +1545,15 @@ async function saveArtifacts(options, result) {
       batch: options.batch,
       ubatch: options.ubatch,
       gpuLayers: options.gpuLayers,
+      modelProvider: resolveModelProvider(options),
       modelSource: resolveConfiguredModelSource(options),
       modelRepo: resolveConfiguredModelRepo(options),
       modelFile: resolveConfiguredModelFile(options),
       localModelPath: resolveConfiguredLocalModelPath(options),
       localMmprojPath: resolveConfiguredLocalMmprojPath(options),
+      codexModel: resolveConfiguredCodexModel(options),
+      codexReasoningEffort: resolveConfiguredCodexReasoningEffort(options),
+      codexOauthPort: options.codexOauthPort,
       fitTargetMb: options.fitTargetMb,
       imageMinTokens: options.imageMinTokens,
       imageMaxTokens: options.imageMaxTokens,
@@ -1305,10 +1578,13 @@ async function saveArtifacts(options, result) {
 module.exports = {
   buildMessages,
   buildLaunchArgs,
+  buildResponsesRequestBody,
   enhanceBitmapBuffer,
+  extractModelOutputText,
   getScaledSize,
   inspectModelLaunch,
   isModelCached,
+  parseResponsesSseText,
   prepareImageVariants,
   requestTranslation,
   saveArtifacts,

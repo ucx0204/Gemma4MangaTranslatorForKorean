@@ -1,4 +1,4 @@
-import type { AppSettings, ModelSource, TranslationMode } from "../shared/types";
+import type { AppSettings, CodexReasoningEffort, ModelProvider, ModelSource, TranslationMode } from "../shared/types";
 
 export const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
 export const DEFAULT_GEMMA_MODEL_FILE_Q3 = "gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf";
@@ -6,6 +6,10 @@ export const DEFAULT_GEMMA_MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf";
 export const DEFAULT_GEMMA_MODEL_FILE_Q6 = "gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf";
 export const MAX_GEMMA_GPU_LAYERS = 30;
 export const DEFAULT_GEMMA_GPU_LAYERS = 30;
+export const DEFAULT_MODEL_PROVIDER: ModelProvider = "gemma";
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_REASONING_EFFORT: CodexReasoningEffort = "medium";
+export const DEFAULT_CODEX_OAUTH_PORT = 10531;
 export const DEFAULT_TRANSLATION_MODE: TranslationMode = "fast";
 export const DEFAULT_MODEL_SOURCE: ModelSource = "huggingface";
 
@@ -34,6 +38,7 @@ const TRANSLATION_MODE_DEFAULTS: Record<TranslationMode, TranslationModeDefaults
 export type TranslationOptions = {
   imagePath: string;
   outputDir: string;
+  modelProvider: ModelProvider;
   port: number;
   promptMode: string;
   promptOverrideText?: string;
@@ -62,6 +67,9 @@ export type TranslationOptions = {
   modelFile: string;
   localModelPath?: string;
   localMmprojPath?: string;
+  codexModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
+  codexOauthPort: number;
   hfHomeDir?: string;
   hfHubCacheDir?: string;
   label: string;
@@ -78,11 +86,20 @@ export type TranslationOptionPaths = {
 
 export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env, detectedGpuMemoryMb?: number | null): AppSettings {
   return {
+    modelProvider: resolveModelProvider(env.MANGA_TRANSLATOR_MODEL_PROVIDER, DEFAULT_MODEL_PROVIDER),
     gemma: {
       modelSource: DEFAULT_MODEL_SOURCE,
       modelRepo: resolveNonEmptyString(env.MANGA_TRANSLATOR_MODEL_HF, DEFAULT_GEMMA_MODEL_REPO),
       modelFile: resolveNonEmptyString(env.LLAMA_ARG_HF_FILE, resolveRecommendedModelFile(detectedGpuMemoryMb)),
       gpuLayers: resolveGpuLayerCount(env.MANGA_TRANSLATOR_GPU_LAYERS, DEFAULT_GEMMA_GPU_LAYERS)
+    },
+    codex: {
+      model: resolveNonEmptyString(env.MANGA_TRANSLATOR_CODEX_MODEL, DEFAULT_CODEX_MODEL),
+      reasoningEffort: resolveCodexReasoningEffort(
+        env.MANGA_TRANSLATOR_CODEX_REASONING_EFFORT,
+        DEFAULT_CODEX_REASONING_EFFORT
+      ),
+      oauthPort: resolvePortNumber(env.MANGA_TRANSLATOR_CODEX_OAUTH_PORT, DEFAULT_CODEX_OAUTH_PORT)
     },
     translationMode: DEFAULT_TRANSLATION_MODE,
     nsfwMode: false
@@ -92,9 +109,11 @@ export function resolveDefaultAppSettings(env: NodeJS.ProcessEnv = process.env, 
 export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppSettings()): AppSettings {
   const record = asRecord(raw);
   const gemma = record?.gemma;
+  const codex = record?.codex;
   const localModelPath = resolveOptionalString(asRecord(gemma)?.localModelPath);
   const localMmprojPath = resolveOptionalString(asRecord(gemma)?.localMmprojPath);
   return {
+    modelProvider: resolveModelProvider(record?.modelProvider, defaults.modelProvider),
     gemma: {
       modelSource: resolveModelSource(asRecord(gemma)?.modelSource, defaults.gemma.modelSource),
       modelRepo: resolveNonEmptyString(asRecord(gemma)?.modelRepo, defaults.gemma.modelRepo),
@@ -102,6 +121,11 @@ export function normalizeAppSettings(raw: unknown, defaults = resolveDefaultAppS
       ...(localModelPath ? { localModelPath } : {}),
       ...(localMmprojPath ? { localMmprojPath } : {}),
       gpuLayers: resolveGpuLayerCount(asRecord(gemma)?.gpuLayers, defaults.gemma.gpuLayers)
+    },
+    codex: {
+      model: resolveNonEmptyString(asRecord(codex)?.model, defaults.codex.model),
+      reasoningEffort: resolveCodexReasoningEffort(asRecord(codex)?.reasoningEffort, defaults.codex.reasoningEffort),
+      oauthPort: resolvePortNumber(asRecord(codex)?.oauthPort, defaults.codex.oauthPort)
     },
     translationMode: resolveTranslationMode(record?.translationMode, defaults.translationMode),
     nsfwMode: resolveBoolean(record?.nsfwMode, defaults.nsfwMode)
@@ -137,6 +161,7 @@ export function buildBaseTranslationOptions({
   return {
     imagePath: "",
     outputDir: runDir,
+    modelProvider: settings.modelProvider,
     port: readNumberEnv(env, "MANGA_TRANSLATOR_LLAMA_PORT", 18180),
     promptMode: "ko_bbox_lines_multiview",
     nsfwMode: settings.nsfwMode,
@@ -164,6 +189,9 @@ export function buildBaseTranslationOptions({
     modelFile: settings.gemma.modelFile,
     localModelPath: settings.gemma.localModelPath,
     localMmprojPath: settings.gemma.localMmprojPath,
+    codexModel: settings.codex.model,
+    codexReasoningEffort: settings.codex.reasoningEffort,
+    codexOauthPort: settings.codex.oauthPort,
     hfHomeDir: paths.hfHomeDir,
     hfHubCacheDir: paths.hfHubCacheDir,
     label: `app-${jobId}`
@@ -179,8 +207,21 @@ function resolveTranslationMode(value: unknown, fallback: TranslationMode): Tran
   return value === "fast" || value === "accuracy" ? value : fallback;
 }
 
+function resolveModelProvider(value: unknown, fallback: ModelProvider): ModelProvider {
+  return value === "openai-codex" || value === "gemma" ? value : fallback;
+}
+
 function resolveModelSource(value: unknown, fallback: ModelSource): ModelSource {
   return value === "local" || value === "huggingface" ? value : fallback;
+}
+
+function resolveCodexReasoningEffort(value: unknown, fallback: CodexReasoningEffort): CodexReasoningEffort {
+  if (value === "minimal") {
+    return "low";
+  }
+  return value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh"
+    ? value
+    : fallback;
 }
 
 function resolveTranslationModeDefaults(mode: TranslationMode): TranslationModeDefaults {
@@ -201,6 +242,14 @@ function resolveGpuLayerCount(value: unknown, fallback: number): number {
     return fallback;
   }
   return clampInteger(parsed, 0, MAX_GEMMA_GPU_LAYERS);
+}
+
+function resolvePortNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return clampInteger(parsed, 0, 65535);
 }
 
 function clampInteger(value: number, min: number, max: number): number {

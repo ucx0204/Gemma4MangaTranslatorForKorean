@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBaseTranslationOptions,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_OAUTH_PORT,
+  DEFAULT_CODEX_REASONING_EFFORT,
   DEFAULT_GEMMA_GPU_LAYERS,
   DEFAULT_GEMMA_MODEL_FILE,
   DEFAULT_GEMMA_MODEL_FILE_Q3,
@@ -18,6 +21,9 @@ describe("app settings helpers", () => {
 
     expect(defaults.gemma.modelFile).toBe(DEFAULT_GEMMA_MODEL_FILE);
     expect(defaults.gemma.gpuLayers).toBe(DEFAULT_GEMMA_GPU_LAYERS);
+    expect(defaults.codex.model).toBe(DEFAULT_CODEX_MODEL);
+    expect(defaults.codex.reasoningEffort).toBe(DEFAULT_CODEX_REASONING_EFFORT);
+    expect(defaults.codex.oauthPort).toBe(DEFAULT_CODEX_OAUTH_PORT);
     expect(defaults.translationMode).toBe(DEFAULT_TRANSLATION_MODE);
   });
 
@@ -45,12 +51,14 @@ describe("app settings helpers", () => {
 
     expect(parseStoredAppSettings("", defaults)).toEqual(defaults);
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"custom/repo\"}}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "huggingface",
         modelRepo: "custom/repo",
         modelFile: "env-default.gguf",
         gpuLayers: 12
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
@@ -60,45 +68,53 @@ describe("app settings helpers", () => {
     const defaults = resolveDefaultAppSettings();
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":31}}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 30
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":99}}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 30
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
 
     expect(parseStoredAppSettings("{\"gemma\":{\"modelRepo\":\"repo\",\"modelFile\":\"file.gguf\",\"gpuLayers\":-1}}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "huggingface",
         modelRepo: "repo",
         modelFile: "file.gguf",
         gpuLayers: 0
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
 
     expect(parseStoredAppSettings("{\"gemma\":{\"gpuLayers\":\"abc\"}}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "huggingface",
         modelRepo: defaults.gemma.modelRepo,
         modelFile: defaults.gemma.modelFile,
         gpuLayers: DEFAULT_GEMMA_GPU_LAYERS
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
@@ -108,13 +124,17 @@ describe("app settings helpers", () => {
     const defaults = resolveDefaultAppSettings();
 
     expect(parseStoredAppSettings("{\"nsfwMode\":true}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: defaults.gemma,
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: true
     });
 
     expect(parseStoredAppSettings("{\"nsfwMode\":\"off\"}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: defaults.gemma,
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
@@ -124,13 +144,17 @@ describe("app settings helpers", () => {
     const defaults = resolveDefaultAppSettings();
 
     expect(parseStoredAppSettings("{\"translationMode\":\"accuracy\"}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: defaults.gemma,
+      codex: defaults.codex,
       translationMode: "accuracy",
       nsfwMode: false
     });
 
     expect(parseStoredAppSettings("{\"translationMode\":\"turbo\"}", defaults)).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: defaults.gemma,
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
@@ -138,11 +162,17 @@ describe("app settings helpers", () => {
 
   it("builds fast mode translation options from saved model settings while preserving other defaults", () => {
     const settings: AppSettings = {
+      modelProvider: "gemma",
       gemma: {
         modelSource: "huggingface",
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
+      },
+      codex: {
+        model: DEFAULT_CODEX_MODEL,
+        reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
+        oauthPort: DEFAULT_CODEX_OAUTH_PORT
       },
       translationMode: "fast",
       nsfwMode: true
@@ -168,6 +198,10 @@ describe("app settings helpers", () => {
 
     expect(options.modelRepo).toBe("saved/repo");
     expect(options.modelFile).toBe("saved-model.gguf");
+    expect(options.modelProvider).toBe("gemma");
+    expect(options.codexModel).toBe(DEFAULT_CODEX_MODEL);
+    expect(options.codexReasoningEffort).toBe(DEFAULT_CODEX_REASONING_EFFORT);
+    expect(options.codexOauthPort).toBe(DEFAULT_CODEX_OAUTH_PORT);
     expect(options.gpuLayers).toBe(24);
     expect(options.nsfwMode).toBe(true);
     expect(options.temperature).toBe(0.2);
@@ -185,11 +219,17 @@ describe("app settings helpers", () => {
 
   it("builds accuracy mode translation options with the previous larger image budget", () => {
     const settings: AppSettings = {
+      modelProvider: "gemma",
       gemma: {
         modelSource: "huggingface",
         modelRepo: "saved/repo",
         modelFile: "saved-model.gguf",
         gpuLayers: 24
+      },
+      codex: {
+        model: DEFAULT_CODEX_MODEL,
+        reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
+        oauthPort: DEFAULT_CODEX_OAUTH_PORT
       },
       translationMode: "accuracy",
       nsfwMode: false
@@ -227,6 +267,7 @@ describe("app settings helpers", () => {
         defaults
       )
     ).toEqual({
+      modelProvider: defaults.modelProvider,
       gemma: {
         modelSource: "local",
         modelRepo: defaults.gemma.modelRepo,
@@ -235,8 +276,53 @@ describe("app settings helpers", () => {
         localMmprojPath: "D:/models/mmproj.gguf",
         gpuLayers: defaults.gemma.gpuLayers
       },
+      codex: defaults.codex,
       translationMode: "fast",
       nsfwMode: false
     });
+  });
+
+  it("normalizes Codex provider settings", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(
+      parseStoredAppSettings(
+        JSON.stringify({
+          modelProvider: "openai-codex",
+          codex: {
+            model: "gpt-5.5",
+            reasoningEffort: "xhigh",
+            oauthPort: 10532
+          }
+        }),
+        defaults
+      )
+    ).toEqual({
+      modelProvider: "openai-codex",
+      gemma: defaults.gemma,
+      codex: {
+        model: "gpt-5.5",
+        reasoningEffort: "xhigh",
+        oauthPort: 10532
+      },
+      translationMode: "fast",
+      nsfwMode: false
+    });
+  });
+
+  it("maps the old Codex minimal value to low", () => {
+    const defaults = resolveDefaultAppSettings();
+
+    expect(
+      parseStoredAppSettings(
+        JSON.stringify({
+          modelProvider: "openai-codex",
+          codex: {
+            reasoningEffort: "minimal"
+          }
+        }),
+        defaults
+      ).codex.reasoningEffort
+    ).toBe("low");
   });
 });

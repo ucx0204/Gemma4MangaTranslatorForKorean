@@ -30,6 +30,7 @@ import {
   updatePageAfterAnalysis
 } from "./library";
 import { getLogPath, logError, logInfo, resetAppLog, writeLog } from "./logger";
+import { startOpenAIOAuthEndpoint, stopOpenAIOAuthEndpoint, type OpenAIOAuthEndpoint } from "./openaiOauthEndpoint";
 import { getAppSettings, resetAppSettings, saveAppSettings } from "./settingsStore";
 import { runWholePagePipeline } from "./wholePagePipeline";
 import type {
@@ -81,7 +82,7 @@ type SimplePageRuntime = {
   stopServer: (server: { child: unknown } | null | undefined) => Promise<void>;
   testModelReply: (server: { baseUrl: string }, options: Record<string, unknown>) => Promise<{
     outputText: string;
-    launchTarget: { launchMode: "huggingface" | "cached-hf" | "local"; modelPath?: string | null; mmprojPath?: string | null };
+    launchTarget: { launchMode: "huggingface" | "cached-hf" | "local" | "openai-codex"; modelPath?: string | null; mmprojPath?: string | null };
   }>;
 };
 
@@ -203,7 +204,7 @@ function registerIpc(): void {
       return {
         ok: false,
         message: "번역 작업 중에는 모델 테스트를 실행할 수 없습니다.",
-        launchMode: settings.gemma.modelSource === "local" ? "local" : "huggingface"
+        launchMode: resolveSettingsLaunchMode(settings)
       };
     }
 
@@ -222,25 +223,30 @@ function registerIpc(): void {
       label: `settings-test-${testId}`
     };
 
-    let server: Awaited<ReturnType<SimplePageRuntime["startServer"]>> | null = null;
+    let server: Awaited<ReturnType<SimplePageRuntime["startServer"]>> | OpenAIOAuthEndpoint | null = null;
     try {
-      server = await runtime.startServer(options);
+      server = options.modelProvider === "openai-codex" ? await startOpenAIOAuthEndpoint(options) : await runtime.startServer(options);
       const result = await runtime.testModelReply(server, options);
       return {
         ok: true,
         message: `모델 로드 및 텍스트 응답 확인 완료: ${result.outputText}`,
-        launchMode: result.launchTarget.launchMode,
+        launchMode: options.modelProvider === "openai-codex" ? "openai-codex" : result.launchTarget.launchMode,
         resolvedModelPath: result.launchTarget.modelPath ?? null,
-        resolvedMmprojPath: result.launchTarget.mmprojPath ?? null
+        resolvedMmprojPath: result.launchTarget.mmprojPath ?? null,
+        resolvedEndpoint: options.modelProvider === "openai-codex" ? server.baseUrl : null
       };
     } catch (error) {
       return {
         ok: false,
         message: formatModelTestError(error),
-        launchMode: settings.gemma.modelSource === "local" ? "local" : "huggingface"
+        launchMode: resolveSettingsLaunchMode(settings)
       };
     } finally {
-      await runtime.stopServer(server);
+      if (isOpenAIOAuthEndpoint(server)) {
+        await stopOpenAIOAuthEndpoint(server);
+      } else {
+        await runtime.stopServer(server);
+      }
     }
   });
 
@@ -528,6 +534,17 @@ function detectSiblingMmprojPath(modelPath: string): string | null {
     (entry) => entry.isFile() && /^mmproj.*\.gguf$/i.test(entry.name)
   );
   return match ? join(folder, match.name) : null;
+}
+
+function resolveSettingsLaunchMode(settings: AppSettings): ModelTestResult["launchMode"] {
+  if (settings.modelProvider === "openai-codex") {
+    return "openai-codex";
+  }
+  return settings.gemma.modelSource === "local" ? "local" : "huggingface";
+}
+
+function isOpenAIOAuthEndpoint(server: Awaited<ReturnType<SimplePageRuntime["startServer"]>> | OpenAIOAuthEndpoint | null): server is OpenAIOAuthEndpoint {
+  return Boolean(server && "provider" in server && server.provider === "openai-codex");
 }
 
 async function reserveFreePort(): Promise<number> {

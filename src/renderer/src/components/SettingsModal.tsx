@@ -1,5 +1,11 @@
 import React from "react";
-import type { AppSettings, ModelSource, TranslationMode } from "../../../shared/types";
+import type {
+  AppSettings,
+  CodexReasoningEffort,
+  ModelProvider,
+  ModelSource,
+  TranslationMode
+} from "../../../shared/types";
 
 const MAX_GPU_LAYERS = 30;
 const DEFAULT_GEMMA_MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF";
@@ -30,6 +36,18 @@ type TranslationModeOption = {
 
 type ModelSourceOption = {
   id: ModelSource;
+  label: string;
+  description: string;
+};
+
+type ModelProviderOption = {
+  id: ModelProvider;
+  label: string;
+  description: string;
+};
+
+type CodexReasoningOption = {
+  id: CodexReasoningEffort;
   label: string;
   description: string;
 };
@@ -72,6 +90,47 @@ const MODEL_SOURCE_OPTIONS: ModelSourceOption[] = [
   }
 ];
 
+const MODEL_PROVIDER_OPTIONS: ModelProviderOption[] = [
+  {
+    id: "gemma",
+    label: "Gemma 4",
+    description: "로컬 llama-server로 Gemma 4 비전 모델을 실행합니다."
+  },
+  {
+    id: "openai-codex",
+    label: "OpenAI Codex",
+    description: "Codex 로그인 토큰을 쓰는 openai-oauth 엔드포인트로 요청합니다."
+  }
+];
+
+const CODEX_REASONING_OPTIONS: CodexReasoningOption[] = [
+  {
+    id: "none",
+    label: "없음",
+    description: "생각 예산을 쓰지 않고 가장 빠르게 응답합니다."
+  },
+  {
+    id: "low",
+    label: "낮음",
+    description: "가벼운 추론으로 처리합니다."
+  },
+  {
+    id: "medium",
+    label: "보통",
+    description: "기본 균형 설정입니다."
+  },
+  {
+    id: "high",
+    label: "높음",
+    description: "더 오래 생각해서 까다로운 페이지를 처리합니다."
+  },
+  {
+    id: "xhigh",
+    label: "최고",
+    description: "가장 넉넉한 생각 예산을 사용합니다."
+  }
+];
+
 type SettingsModalProps = {
   initialSettings: AppSettings;
   busy: boolean;
@@ -91,6 +150,7 @@ export function SettingsModal({
   onReset,
   onSubmit
 }: SettingsModalProps): React.JSX.Element {
+  const [modelProvider, setModelProvider] = React.useState<ModelProvider>(initialSettings.modelProvider);
   const [modelSource, setModelSource] = React.useState<ModelSource>(initialSettings.gemma.modelSource);
   const [selectedPreset, setSelectedPreset] = React.useState<ModelPresetId>(() =>
     resolveModelPreset(initialSettings.gemma.modelRepo, initialSettings.gemma.modelFile)
@@ -100,6 +160,11 @@ export function SettingsModal({
   const [localModelPath, setLocalModelPath] = React.useState(initialSettings.gemma.localModelPath ?? "");
   const [localMmprojPath, setLocalMmprojPath] = React.useState(initialSettings.gemma.localMmprojPath ?? "");
   const [gpuLayers, setGpuLayers] = React.useState(String(clampGpuLayers(initialSettings.gemma.gpuLayers)));
+  const [codexModel, setCodexModel] = React.useState(initialSettings.codex.model);
+  const [codexReasoningEffort, setCodexReasoningEffort] = React.useState<CodexReasoningEffort>(
+    initialSettings.codex.reasoningEffort
+  );
+  const [codexOauthPort, setCodexOauthPort] = React.useState(String(initialSettings.codex.oauthPort));
   const [translationMode, setTranslationMode] = React.useState<TranslationMode>(initialSettings.translationMode);
   const [nsfwMode, setNsfwMode] = React.useState(initialSettings.nsfwMode);
   const [localActionBusy, setLocalActionBusy] = React.useState(false);
@@ -109,6 +174,7 @@ export function SettingsModal({
   const gpuSliderRef = React.useRef<HTMLInputElement | null>(null);
 
   React.useEffect(() => {
+    setModelProvider(initialSettings.modelProvider);
     setModelSource(initialSettings.gemma.modelSource);
     setSelectedPreset(resolveModelPreset(initialSettings.gemma.modelRepo, initialSettings.gemma.modelFile));
     setCustomModelRepo(initialSettings.gemma.modelRepo);
@@ -116,12 +182,18 @@ export function SettingsModal({
     setLocalModelPath(initialSettings.gemma.localModelPath ?? "");
     setLocalMmprojPath(initialSettings.gemma.localMmprojPath ?? "");
     setGpuLayers(String(clampGpuLayers(initialSettings.gemma.gpuLayers)));
+    setCodexModel(initialSettings.codex.model);
+    setCodexReasoningEffort(initialSettings.codex.reasoningEffort);
+    setCodexOauthPort(String(initialSettings.codex.oauthPort));
     setTranslationMode(initialSettings.translationMode);
     setNsfwMode(initialSettings.nsfwMode);
     setTestState({ status: "idle", message: null, detail: null });
   }, [initialSettings]);
 
   React.useEffect(() => {
+    if (modelProvider === "openai-codex") {
+      return;
+    }
     if (modelSource === "local") {
       localModelInputRef.current?.focus();
       localModelInputRef.current?.select();
@@ -133,7 +205,7 @@ export function SettingsModal({
       return;
     }
     gpuSliderRef.current?.focus();
-  }, [modelSource, selectedPreset]);
+  }, [modelProvider, modelSource, selectedPreset]);
 
   const controlsBusy = busy || localActionBusy || testState.status === "running";
   const activePreset = modelSource === "huggingface" && selectedPreset !== "custom" ? MODEL_PRESETS[selectedPreset] : null;
@@ -141,21 +213,53 @@ export function SettingsModal({
   const trimmedModelFile = (activePreset?.modelFile ?? customModelFile).trim();
   const trimmedLocalModelPath = localModelPath.trim();
   const trimmedLocalMmprojPath = localMmprojPath.trim();
+  const trimmedCodexModel = codexModel.trim();
   const parsedGpuLayers = Number(gpuLayers);
+  const parsedCodexOauthPort = Number(codexOauthPort);
   const gpuLayersValid =
     Number.isInteger(parsedGpuLayers) && parsedGpuLayers >= 0 && parsedGpuLayers <= MAX_GPU_LAYERS;
+  const codexOauthPortValid =
+    Number.isInteger(parsedCodexOauthPort) && parsedCodexOauthPort >= 0 && parsedCodexOauthPort <= 65535;
   const canSubmit = Boolean(
-    gpuLayersValid && (modelSource === "local" ? trimmedLocalModelPath : trimmedModelRepo && trimmedModelFile)
+    modelProvider === "openai-codex"
+      ? trimmedCodexModel && codexOauthPortValid
+      : gpuLayersValid && (modelSource === "local" ? trimmedLocalModelPath : trimmedModelRepo && trimmedModelFile)
   );
   const sliderValue =
     Number.isFinite(parsedGpuLayers) ? clampGpuLayers(Math.trunc(parsedGpuLayers)) : 0;
 
   const buildSettings = React.useCallback((): AppSettings | null => {
+    if (modelProvider === "openai-codex") {
+      if (!trimmedCodexModel || !codexOauthPortValid) {
+        return null;
+      }
+
+      return {
+        modelProvider,
+        gemma: {
+          modelSource,
+          modelRepo: trimmedModelRepo || DEFAULT_GEMMA_MODEL_REPO,
+          modelFile: trimmedModelFile || MODEL_PRESETS.q4.modelFile,
+          ...(trimmedLocalModelPath ? { localModelPath: trimmedLocalModelPath } : {}),
+          ...(trimmedLocalMmprojPath ? { localMmprojPath: trimmedLocalMmprojPath } : {}),
+          gpuLayers: gpuLayersValid ? parsedGpuLayers : initialSettings.gemma.gpuLayers
+        },
+        codex: {
+          model: trimmedCodexModel,
+          reasoningEffort: codexReasoningEffort,
+          oauthPort: parsedCodexOauthPort
+        },
+        translationMode,
+        nsfwMode
+      };
+    }
+
     if (!gpuLayersValid) {
       return null;
     }
 
     return {
+      modelProvider,
       gemma: {
         modelSource,
         modelRepo: trimmedModelRepo || DEFAULT_GEMMA_MODEL_REPO,
@@ -164,17 +268,30 @@ export function SettingsModal({
         ...(trimmedLocalMmprojPath ? { localMmprojPath: trimmedLocalMmprojPath } : {}),
         gpuLayers: parsedGpuLayers
       },
+      codex: {
+        model: trimmedCodexModel || initialSettings.codex.model,
+        reasoningEffort: codexReasoningEffort,
+        oauthPort: codexOauthPortValid ? parsedCodexOauthPort : initialSettings.codex.oauthPort
+      },
       translationMode,
       nsfwMode
     };
   }, [
+    modelProvider,
     gpuLayersValid,
+    codexOauthPortValid,
     modelSource,
     trimmedModelRepo,
     trimmedModelFile,
     trimmedLocalModelPath,
     trimmedLocalMmprojPath,
+    trimmedCodexModel,
     parsedGpuLayers,
+    parsedCodexOauthPort,
+    codexReasoningEffort,
+    initialSettings.gemma.gpuLayers,
+    initialSettings.codex.model,
+    initialSettings.codex.oauthPort,
     translationMode,
     nsfwMode
   ]);
@@ -265,7 +382,7 @@ export function SettingsModal({
       setTestState({
         status: result.ok ? "success" : "error",
         message: result.message,
-        detail: buildTestDetail(result.resolvedModelPath, result.resolvedMmprojPath)
+        detail: buildTestDetail(result.resolvedModelPath, result.resolvedMmprojPath, result.resolvedEndpoint)
       });
     } catch (error) {
       setTestState({
@@ -312,6 +429,30 @@ export function SettingsModal({
             </p>
           </div>
 
+          <div className="settings-field-stack">
+            <span>번역 엔진</span>
+            <div className="settings-mode-group" role="tablist" aria-label="번역 엔진">
+              {MODEL_PROVIDER_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`settings-preset-button ${modelProvider === option.id ? "active" : ""}`}
+                  onClick={() => {
+                    clearTestState();
+                    setModelProvider(option.id);
+                  }}
+                  disabled={controlsBusy}
+                  aria-pressed={modelProvider === option.id}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <p className="muted-line modal-note">
+              {MODEL_PROVIDER_OPTIONS.find((option) => option.id === modelProvider)?.description}
+            </p>
+          </div>
+
           <label className="settings-toggle-row">
             NSFW 모드
             <button
@@ -329,6 +470,8 @@ export function SettingsModal({
           </label>
           <p className="muted-line">켜두면 시스템 프롬프트에 NSFW 허용 지시문을 추가합니다.</p>
 
+          {modelProvider === "gemma" ? (
+            <>
           <div className="settings-field-stack">
             <span>모델 소스</span>
             <div className="settings-mode-group" role="tablist" aria-label="모델 소스">
@@ -503,6 +646,73 @@ export function SettingsModal({
             </div>
             <p className="muted-line modal-note">0부터 30까지 설정할 수 있습니다.</p>
           </div>
+            </>
+          ) : (
+            <>
+              <label>
+                Codex 모델
+                <input
+                  value={codexModel}
+                  disabled={controlsBusy}
+                  onChange={(event) => {
+                    clearTestState();
+                    setCodexModel(event.target.value);
+                  }}
+                  placeholder="gpt-5.5"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      submit();
+                    }
+                  }}
+                />
+              </label>
+
+              <div className="settings-field-stack">
+                <span>생각</span>
+                <div className="settings-preset-group" role="tablist" aria-label="Codex 생각">
+                  {CODEX_REASONING_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`settings-preset-button ${codexReasoningEffort === option.id ? "active" : ""}`}
+                      onClick={() => {
+                        clearTestState();
+                        setCodexReasoningEffort(option.id);
+                      }}
+                      disabled={controlsBusy}
+                      aria-pressed={codexReasoningEffort === option.id}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="muted-line modal-note">
+                  {CODEX_REASONING_OPTIONS.find((option) => option.id === codexReasoningEffort)?.description}
+                </p>
+              </div>
+
+              <label>
+                openai-oauth 포트
+                <input
+                  type="number"
+                  min={0}
+                  max={65535}
+                  step={1}
+                  value={codexOauthPort}
+                  disabled={controlsBusy}
+                  onChange={(event) => {
+                    clearTestState();
+                    setCodexOauthPort(event.target.value);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      submit();
+                    }
+                  }}
+                />
+              </label>
+            </>
+          )}
 
           <div className="settings-field-stack">
             <span>모델 테스트</span>
@@ -527,7 +737,12 @@ export function SettingsModal({
             ) : null}
           </div>
 
-          {!gpuLayersValid ? <p className="muted-line">GPU layers는 0 이상 30 이하의 정수여야 합니다.</p> : null}
+          {modelProvider === "gemma" && !gpuLayersValid ? (
+            <p className="muted-line">GPU layers는 0 이상 30 이하의 정수여야 합니다.</p>
+          ) : null}
+          {modelProvider === "openai-codex" && !codexOauthPortValid ? (
+            <p className="muted-line">openai-oauth 포트는 0 이상 65535 이하의 정수여야 합니다.</p>
+          ) : null}
         </section>
 
         <div className="modal-actions settings-actions">
@@ -580,10 +795,15 @@ function clampGpuLayers(value: number): number {
   return Math.min(MAX_GPU_LAYERS, Math.max(0, value));
 }
 
-function buildTestDetail(modelPath: string | null | undefined, mmprojPath: string | null | undefined): string | null {
+function buildTestDetail(
+  modelPath: string | null | undefined,
+  mmprojPath: string | null | undefined,
+  endpoint: string | null | undefined
+): string | null {
   const lines = [
     modelPath ? `모델: ${modelPath}` : null,
-    mmprojPath ? `mmproj: ${mmprojPath}` : null
+    mmprojPath ? `mmproj: ${mmprojPath}` : null,
+    endpoint ? `엔드포인트: ${endpoint}` : null
   ].filter(Boolean);
 
   return lines.length > 0 ? lines.join("\n") : null;

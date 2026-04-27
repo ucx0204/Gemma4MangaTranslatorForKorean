@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildBaseTranslationOptions, type TranslationOptions } from "./appSettings";
 import { logError, logInfo, logWarn } from "./logger";
+import { startOpenAIOAuthEndpoint, stopOpenAIOAuthEndpoint, type OpenAIOAuthEndpoint } from "./openaiOauthEndpoint";
 import { estimateBlockFontSizePx, clampBbox, normalizeBlockType } from "../shared/geometry";
 import type { AppSettings, BBox, BlockType, JobEvent, MangaPage, TranslationBlock } from "../shared/types";
 import { getAppPaths } from "./appPaths";
@@ -24,6 +25,8 @@ type ServerHandle = {
   child: unknown;
   startedByScript: boolean;
 };
+
+type ModelEndpointHandle = ServerHandle | OpenAIOAuthEndpoint;
 
 type TranslationResult = {
   outputText: string;
@@ -94,8 +97,9 @@ export async function runWholePagePipeline({
   const runtime = loadRuntimeModules();
   const baseOptions = buildBaseOptions(jobId, runPaths.runDir, appSettings, paths);
   const progressTotal = pages.length;
-  const modelCached = runtime.simplePage.isModelCached(baseOptions);
-  const localModelSelected = baseOptions.modelSource === "local";
+  const codexSelected = baseOptions.modelProvider === "openai-codex";
+  const modelCached = codexSelected || runtime.simplePage.isModelCached(baseOptions);
+  const localModelSelected = !codexSelected && baseOptions.modelSource === "local";
 
   logInfo("Analysis pipeline initialized", {
     jobId,
@@ -111,22 +115,26 @@ export async function runWholePagePipeline({
     status: "starting",
     progressText: localModelSelected
       ? "로컬 모델/서버 준비 중"
-      : modelCached
-        ? "Gemma 4 서버 시작 중"
-        : "모델 다운로드/서버 준비 중",
-    phase: localModelSelected || modelCached ? "booting" : "model_downloading",
+      : codexSelected
+        ? "OpenAI Codex 엔드포인트 준비 중"
+        : modelCached
+          ? "Gemma 4 서버 시작 중"
+          : "모델 다운로드/서버 준비 중",
+    phase: localModelSelected || modelCached || codexSelected ? "booting" : "model_downloading",
     progressCurrent: 0,
     progressTotal,
     pageTotal: pages.length,
     detail: localModelSelected
       ? "선택한 로컬 모델을 불러오는 중입니다. 큰 모델은 시작까지 시간이 걸릴 수 있습니다."
-      : modelCached
-        ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
-        : "로컬 모델 자산이 없거나 부족해 다운로드/갱신이 필요할 수 있습니다."
+      : codexSelected
+        ? `${baseOptions.codexModel}, thinking ${baseOptions.codexReasoningEffort}`
+        : modelCached
+          ? `gpu layers ${baseOptions.gpuLayers}, ${baseOptions.modelFile}`
+          : "로컬 모델 자산이 없거나 부족해 다운로드/갱신이 필요할 수 있습니다."
   });
 
-  const server = await runtime.simplePage.startServer(baseOptions);
-  onCleanupReady?.(() => runtime.simplePage.stopServer(server));
+  const server = await startModelEndpoint(runtime, baseOptions);
+  onCleanupReady?.(() => stopModelEndpoint(runtime, server));
   const warnings: string[] = [];
   const maxAttempts = Math.max(1, readNumberEnv("MANGA_TRANSLATOR_PAGE_RETRIES", 5));
 
@@ -139,7 +147,7 @@ export async function runWholePagePipeline({
     progressCurrent: 0,
     progressTotal,
     pageTotal: pages.length,
-    detail: `server ready on port ${baseOptions.port}`
+    detail: codexSelected ? `openai-oauth ready at ${server.baseUrl}` : `server ready on port ${baseOptions.port}`
   });
 
   try {
@@ -327,7 +335,7 @@ export async function runWholePagePipeline({
 
     return { pages: nextPages, warnings };
   } finally {
-    await runtime.simplePage.stopServer(server);
+    await stopModelEndpoint(runtime, server);
   }
 }
 
@@ -425,6 +433,7 @@ function summarizeTranslationOptions(options: TranslationOptions): Record<string
     label: options.label,
     imagePath: options.imagePath,
     outputDir: options.outputDir,
+    modelProvider: options.modelProvider,
     port: options.port,
     promptMode: options.promptMode,
     promptOverrideText: options.promptOverrideText ? summarizePreview(options.promptOverrideText, 600) : undefined,
@@ -450,9 +459,31 @@ function summarizeTranslationOptions(options: TranslationOptions): Record<string
     serverPath: options.serverPath,
     modelRepo: options.modelRepo,
     modelFile: options.modelFile,
+    codexModel: options.codexModel,
+    codexReasoningEffort: options.codexReasoningEffort,
+    codexOauthPort: options.codexOauthPort,
     hfHomeDir: options.hfHomeDir ?? null,
     hfHubCacheDir: options.hfHubCacheDir ?? null
   };
+}
+
+async function startModelEndpoint(runtime: RuntimeModules, options: TranslationOptions): Promise<ModelEndpointHandle> {
+  if (options.modelProvider === "openai-codex") {
+    return startOpenAIOAuthEndpoint(options);
+  }
+  return runtime.simplePage.startServer(options);
+}
+
+async function stopModelEndpoint(runtime: RuntimeModules, endpoint: ModelEndpointHandle | null | undefined): Promise<void> {
+  if (isOpenAIOAuthEndpoint(endpoint)) {
+    await stopOpenAIOAuthEndpoint(endpoint);
+    return;
+  }
+  await runtime.simplePage.stopServer(endpoint);
+}
+
+function isOpenAIOAuthEndpoint(endpoint: ModelEndpointHandle | null | undefined): endpoint is OpenAIOAuthEndpoint {
+  return Boolean(endpoint && "provider" in endpoint && endpoint.provider === "openai-codex");
 }
 
 function summarizePage(page: MangaPage): Record<string, unknown> {
@@ -475,7 +506,12 @@ function classifyFailure(error: unknown): string {
   if (message.includes("llama-server") || message.includes("bundled llama-server") || message.includes("timed out while waiting")) {
     return "server-startup";
   }
-  if (message.includes("gemma request failed") || message.includes("request transport failed")) {
+  if (
+    message.includes("gemma request failed") ||
+    message.includes("openai codex request failed") ||
+    message.includes("request transport failed") ||
+    message.includes("openai-oauth")
+  ) {
     return "model-request";
   }
   if (message.includes("json parse failed")) {

@@ -4,7 +4,9 @@ export type SourceTextDirection = "horizontal" | "vertical";
 export type RenderTextDirection = "horizontal" | "vertical" | "rotated" | "hidden";
 
 export type JobKind = "gemma-analysis";
+export type ModelProvider = "gemma" | "openai-codex";
 export type ModelSource = "huggingface" | "local";
+export type CodexReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 
 export type GemmaSettings = {
   modelSource: ModelSource;
@@ -15,10 +17,18 @@ export type GemmaSettings = {
   gpuLayers: number;
 };
 
+export type CodexSettings = {
+  model: string;
+  reasoningEffort: CodexReasoningEffort;
+  oauthPort: number;
+};
+
 export type TranslationMode = "fast" | "accuracy";
 
 export type AppSettings = {
+  modelProvider: ModelProvider;
   gemma: GemmaSettings;
+  codex: CodexSettings;
   translationMode: TranslationMode;
   nsfwMode: boolean;
 };
@@ -210,9 +220,10 @@ export type LocalModelPickResult = {
 export type ModelTestResult = {
   ok: boolean;
   message: string;
-  launchMode: "huggingface" | "cached-hf" | "local";
+  launchMode: "huggingface" | "cached-hf" | "local" | "openai-codex";
   resolvedModelPath?: string | null;
   resolvedMmprojPath?: string | null;
+  resolvedEndpoint?: string | null;
 };
 
 export type StartAnalysisRequest = {
